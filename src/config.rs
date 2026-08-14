@@ -28,6 +28,17 @@ pub struct Config {
     pub pain_enabled: bool,
     pub ledger_enabled: bool,
     pub highway_enabled: bool,
+    /// Handle OpenAI-compatible `/v1/chat/completions` traffic that routes
+    /// through ccft: inject `system_override`, tap the SSE stream for the
+    /// ledger. Applies to any OpenAI-compatible request ccft sees (plain-HTTP
+    /// absolute-form, or CONNECT to an `openai_targets` host).
+    pub openai_enabled: bool,
+    /// `host:port` CONNECT targets to decrypt as OpenAI-compatible servers.
+    /// Only meaningful for local servers that actually speak TLS (most local
+    /// OpenAI servers — Ollama, LM Studio, llama.cpp — are plain HTTP and are
+    /// routed via the plain-HTTP proxy path instead; see docs). Empty by
+    /// default: nothing local is ever intercepted.
+    pub openai_targets: Vec<String>,
     /// Reverse-DNS-style identifier used for the user-mode service unit:
     /// `<label>.plist` on macOS, `<label>.service` on Linux. Defaults to
     /// `com.ccft`. Override per-install via `ccft install --label …` or
@@ -44,6 +55,8 @@ impl Default for Config {
             pain_enabled: false,
             ledger_enabled: true,
             highway_enabled: true,
+            openai_enabled: true,
+            openai_targets: Vec::new(),
             service_label: DEFAULT_SERVICE_LABEL.into(),
         }
     }
@@ -101,6 +114,20 @@ impl Config {
         if let Some(b) = parsed.get("highway").and_then(Value::as_bool) {
             cfg.highway_enabled = b;
         }
+        if let Some(b) = parsed.get("openai").and_then(Value::as_bool) {
+            cfg.openai_enabled = b;
+        }
+        if let Some(arr) = parsed.get("openai_targets").and_then(Value::as_array) {
+            let mut targets = Vec::new();
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    if !s.trim().is_empty() {
+                        targets.push(s.trim().to_string());
+                    }
+                }
+            }
+            cfg.openai_targets = targets;
+        }
         if let Some(s) = parsed.get("service_label").and_then(Value::as_str) {
             if !s.trim().is_empty() {
                 cfg.service_label = s.trim().to_string();
@@ -108,7 +135,7 @@ impl Config {
         }
 
         info!(
-            "[ccft] config loaded ({}): host={} port={} pain={} ledger={} highway={} label={} override={}chars",
+            "[ccft] config loaded ({}): host={} port={} pain={} ledger={} highway={} label={} override={}chars openai={} targets={}",
             path.display(),
             cfg.host,
             cfg.port,
@@ -117,6 +144,8 @@ impl Config {
             cfg.highway_enabled,
             cfg.service_label,
             cfg.system_override.len(),
+            cfg.openai_enabled,
+            cfg.openai_targets.join(","),
         );
         cfg
     }
@@ -160,6 +189,13 @@ pub mod paths {
     }
     pub fn ca_key() -> PathBuf {
         ca_dir().join("ca.key")
+    }
+
+    /// The trust env block ccft writes into its dot directory. `ccft trust
+    /// --apply` sources this from the user's shell RCs so every coding agent
+    /// launched from a shell inherits ccft's proxy + CA trust.
+    pub fn env_file() -> PathBuf {
+        ca_dir().join("ccft.env")
     }
 
     pub fn config_dir() -> PathBuf {

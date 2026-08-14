@@ -35,6 +35,9 @@ pub struct SseTap<B> {
     bytes_seen: usize,
     label: String,
     meta: FlowMeta,
+    /// OpenAI-only: accumulated `choices[].delta.content` chars, used to
+    /// estimate output tokens when the stream omits a real `usage` block.
+    delta_chars: u64,
 }
 
 impl<B> SseTap<B> {
@@ -47,6 +50,7 @@ impl<B> SseTap<B> {
             bytes_seen: 0,
             label: label.into(),
             meta,
+            delta_chars: 0,
         }
     }
 
@@ -72,8 +76,14 @@ impl<B> SseTap<B> {
 
     fn parse_event(&mut self, json_str: &str) {
         let Ok(d): Result<Value, _> = serde_json::from_str(json_str) else {
+            // `data: [DONE]` and any non-JSON SSE payload — ignore.
             return;
         };
+
+        if self.meta.provider == crate::handler::PROVIDER_OPENAI {
+            self.parse_openai_event(&d);
+            return;
+        }
 
         match d.get("type").and_then(Value::as_str) {
             Some("message_start") => {
@@ -104,12 +114,52 @@ impl<B> SseTap<B> {
         }
     }
 
+    /// OpenAI-compatible streaming chunk: `{ model, choices:[{ delta:{content}, finish_reason }], usage? }`.
+    /// Accumulate delta content for a token estimate, and prefer a real
+    /// `usage` block when the server sends one (Ollama / vLLM send it in the
+    /// final chunk when the client requests stream_options.include_usage).
+    fn parse_openai_event(&mut self, d: &Value) {
+        if let Some(model) = d.get("model").and_then(Value::as_str) {
+            self.usage.model = Some(model.to_string());
+        }
+        if let Some(choices) = d.get("choices").and_then(Value::as_array) {
+            for c in choices {
+                if let Some(delta) = c.get("delta") {
+                    if let Some(content) = delta.get("content").and_then(Value::as_str) {
+                        self.delta_chars += content.chars().count() as u64;
+                    }
+                }
+            }
+        }
+        if let Some(u) = d.get("usage") {
+            self.usage.input_tokens = u_u64(u, "prompt_tokens");
+            self.usage.output_tokens = u_u64(u, "completion_tokens");
+            // vLLM/Ollama-style prompt-cache accounting, when present.
+            if let Some(det) = u.get("prompt_tokens_details") {
+                self.usage.cache_read_input_tokens += u_u64(det, "cached_tokens");
+            }
+        }
+    }
+
     fn report(&self) {
         let now_wall = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
         let latency_ms = self.started.elapsed().as_millis() as u64;
+
+        // OpenAI streams sometimes omit `usage`. Fall back to a rough
+        // chars/4 output estimate from what we actually saw stream by.
+        let (input_tokens, output_tokens) = if self.meta.provider == crate::handler::PROVIDER_OPENAI {
+            let out = if self.usage.output_tokens > 0 {
+                self.usage.output_tokens
+            } else {
+                self.delta_chars / 4
+            };
+            (self.usage.input_tokens, out)
+        } else {
+            (self.usage.input_tokens, self.usage.output_tokens)
+        };
 
         let rec = ledger::LedgerRecord {
             timestamp_start: self.meta.started_wall,
@@ -120,8 +170,8 @@ impl<B> SseTap<B> {
             endpoint: &self.meta.endpoint,
             region: None,
             model: self.usage.model.as_deref(),
-            input_tokens: self.usage.input_tokens,
-            output_tokens: self.usage.output_tokens,
+            input_tokens,
+            output_tokens,
             latency_ms,
             cache_read: self.usage.cache_read_input_tokens,
             cache_creation: self.usage.cache_creation_input_tokens,
@@ -136,8 +186,8 @@ impl<B> SseTap<B> {
             "[ccft] LEDGER sid={} model={} in={} out={} cr={} cc={} lat={}ms",
             self.meta.session_id.as_deref().unwrap_or("-"),
             self.usage.model.as_deref().unwrap_or("?"),
-            self.usage.input_tokens,
-            self.usage.output_tokens,
+            input_tokens,
+            output_tokens,
             self.usage.cache_read_input_tokens,
             self.usage.cache_creation_input_tokens,
             latency_ms,

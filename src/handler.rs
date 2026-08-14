@@ -20,6 +20,14 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::*;
 
+/// Which provider's wire format a request/response uses. `anthropic` is
+/// Claude's `/v1/messages`; `openai` is an OpenAI-compatible
+/// `/v1/chat/completions` (local Ollama / LM Studio / llama.cpp / vLLM, or
+/// any OpenAI-compatible host routed through ccft). The tap branches on this
+/// to pick the right SSE usage parser.
+pub const PROVIDER_ANTHROPIC: &str = "anthropic";
+pub const PROVIDER_OPENAI: &str = "openai";
+
 /// Static cc-flytrap.py trim text. Hardcoded because these strings ARE the
 /// project's value-add for `pain=false`; not user config.
 const TRIMMED_BLOCK_2: &str =
@@ -48,6 +56,8 @@ pub struct FlowMeta {
     pub user_text_chars: u64,
     /// Chars in the LAST user message when it's a tool_result.
     pub tool_result_chars: u64,
+    /// Wire-format provider: PROVIDER_ANTHROPIC or PROVIDER_OPENAI.
+    pub provider: &'static str,
 }
 
 type FlowKey = (String, String);
@@ -69,12 +79,23 @@ impl CcftHandler {
     }
 }
 
-fn is_messages_post(req: &Request<Body>) -> bool {
+/// Classify a POST by its request path. Matches the two provider wire formats
+/// ccft knows how to mutate + tap. Host-agnostic: this fires for Anthropic
+/// CONNECT traffic and for any OpenAI-compatible request (local plain-HTTP
+/// absolute-form, or CONNECT to an `openai_targets` host). Returns
+/// PROVIDER_ANTHROPIC / PROVIDER_OPENAI / None for non-API POSTs.
+fn classify_post(req: &Request<Body>) -> Option<&'static str> {
     if req.method() != hyper::Method::POST {
-        return false;
+        return None;
     }
-    let uri = req.uri().to_string();
-    uri.contains("api.anthropic.com") && uri.contains("/v1/messages")
+    let path = req.uri().path();
+    if path.ends_with("/v1/messages") {
+        return Some(PROVIDER_ANTHROPIC);
+    }
+    if path.ends_with("/v1/chat/completions") {
+        return Some(PROVIDER_OPENAI);
+    }
+    None
 }
 
 fn flow_key(client: &str, uri: &hyper::Uri) -> FlowKey {
@@ -282,15 +303,65 @@ fn mutate_messages_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
     Some(Bytes::from(new_body))
 }
 
-/// Hosts whose CONNECT requests we flytrap (intercept + decrypt). Today
-/// we only have mutation/ledger logic for Anthropic's /v1/messages, so
-/// flytrapping anything else gains nothing while costing TLS failures
-/// for subprocesses that don't trust ccft's CA. Add hosts here as we add
-/// per-provider handler support.
+/// Mutate an OpenAI-compatible `/v1/chat/completions` request body. OpenAI
+/// has no `system` array — the system prompt is a `role:"system"` message.
+/// Inject `system_override` either by merging into an existing system message
+/// (when its content is a plain string) or by prepending a new system message.
+/// Claude-specific `pain` trimming is NOT applied here — those bloat blocks
+/// are Anthropic's. Returns a new body if mutated, or `None`.
+fn mutate_openai_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
+    if cfg.system_override.is_empty() {
+        return None;
+    }
+    let mut data: Value = serde_json::from_slice(body_bytes).ok()?;
+    let messages = data.get_mut("messages")?.as_array_mut()?;
+
+    // Merge into the existing system message when its content is a string;
+    // otherwise (array content, or no system message) prepend a fresh one.
+    let mut injected = false;
+    for m in messages.iter_mut() {
+        if m.get("role").and_then(Value::as_str) == Some("system") {
+            if let Some(content) = m.get("content").and_then(Value::as_str) {
+                let combined = if content.is_empty() {
+                    cfg.system_override.clone()
+                } else {
+                    format!("{}\n\n{}", content, cfg.system_override)
+                };
+                m["content"] = Value::String(combined);
+                injected = true;
+            }
+            break;
+        }
+    }
+    if !injected {
+        messages.insert(
+            0,
+            serde_json::json!({ "role": "system", "content": cfg.system_override }),
+        );
+    }
+
+    let new_body = serde_json::to_vec(&data).ok()?;
+    info!(
+        "[ccft] openai modified: +system ({} -> {} bytes)",
+        body_bytes.len(),
+        new_body.len()
+    );
+    Some(Bytes::from(new_body))
+}
+
+/// Hosts whose CONNECT requests we flytrap (intercept + decrypt). Anthropic
+/// is always on; OpenAI-compatible local servers join only via the
+/// configurable `openai_targets` list (host:port), because intercepting a
+/// CONNECT assumes the upstream speaks TLS — most local OpenAI servers are
+/// plain HTTP and are routed via the plain-HTTP proxy path instead.
 const FLYTRAP_HOSTS: &[&str] = &["api.anthropic.com"];
 
-fn should_flytrap_host(host: &str) -> bool {
-    FLYTRAP_HOSTS.contains(&host)
+fn should_flytrap_host(cfg: &Config, host: &str, port: u16) -> bool {
+    if FLYTRAP_HOSTS.contains(&host) {
+        return true;
+    }
+    let authority = format!("{}:{}", host, port);
+    cfg.openai_targets.iter().any(|t| t == &authority)
 }
 
 impl HttpHandler for CcftHandler {
@@ -299,7 +370,11 @@ impl HttpHandler for CcftHandler {
         _ctx: &HttpContext,
         req: &Request<Body>,
     ) -> bool {
-        should_flytrap_host(req.uri().host().unwrap_or(""))
+        let host = req.uri().host().unwrap_or("");
+        // CONNECT request-target is `host:port`; default to 443 when the
+        // port is implicit.
+        let port = req.uri().port_u16().unwrap_or(443);
+        should_flytrap_host(&self.cfg, host, port)
     }
 
     async fn handle_request(
@@ -307,9 +382,9 @@ impl HttpHandler for CcftHandler {
         ctx: &HttpContext,
         req: Request<Body>,
     ) -> RequestOrResponse {
-        if !is_messages_post(&req) {
+        let Some(provider) = classify_post(&req) else {
             return req.into();
-        }
+        };
 
         let t0 = Instant::now();
         let req = match decode_request(req) {
@@ -337,14 +412,30 @@ impl HttpHandler for CcftHandler {
         };
 
         let session_id = session::extract(&parts.headers, Some(&collected));
-        let (user_text_chars, tool_result_chars) = extract_user_message_chars(&collected);
+        let (user_text_chars, tool_result_chars) = if provider == PROVIDER_ANTHROPIC {
+            extract_user_message_chars(&collected)
+        } else {
+            // OpenAI messages use role:"tool" (not Anthropic's tool_result
+            // content blocks); the driver-kinetics heuristics are Anthropic-
+            // session-specific, so leave these unknown (0) for OpenAI.
+            (0, 0)
+        };
 
-        let new_body = mutate_messages_body(&collected, &self.cfg).unwrap_or(collected);
+        let new_body = match provider {
+            PROVIDER_ANTHROPIC => mutate_messages_body(&collected, &self.cfg).unwrap_or(collected),
+            PROVIDER_OPENAI => mutate_openai_body(&collected, &self.cfg).unwrap_or(collected),
+            _ => collected,
+        };
 
         let _ = self.seq.fetch_add(1, Ordering::Relaxed);
+        // Preserve the actual scheme/authority so the ledger shows local
+        // OpenAI endpoints as http://localhost:11434/... not https://.
+        let scheme = parts.uri.scheme_str().unwrap_or("https");
+        let host = parts.uri.host().unwrap_or("api.anthropic.com");
         let endpoint = format!(
-            "https://{}{}",
-            parts.uri.host().unwrap_or("api.anthropic.com"),
+            "{}://{}{}",
+            scheme,
+            host,
             parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/")
         );
         let key = flow_key(&ctx.client_addr.to_string(), &parts.uri);
@@ -356,6 +447,7 @@ impl HttpHandler for CcftHandler {
             server_ip: None,
             user_text_chars,
             tool_result_chars,
+            provider,
         };
         self.pending.entry(key).or_default().push(meta);
 

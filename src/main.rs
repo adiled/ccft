@@ -35,7 +35,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Open the interactive TUI (default when invoked with no args at a tty).
-    Tui,
+    Tui {
+        /// Read the dev ledger (share_dir/dev) instead of production.
+        #[arg(long)]
+        dev: bool,
+    },
     /// Run the flytrap in the foreground with the production config.
     /// (This is what launchd invokes after `ccft install`.)
     Run,
@@ -71,6 +75,9 @@ enum Cmd {
         /// Dump the CA cert PEM to stdout.
         #[arg(long)]
         ca: bool,
+        /// Use the dev config (port 7179, dev ledger) instead of production.
+        #[arg(long)]
+        dev: bool,
     },
     /// Tail the launchd output log.
     Logs {
@@ -83,6 +90,9 @@ enum Cmd {
         /// Subcommand and args, e.g. `today`, `score 24h`.
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
+        /// Read the dev ledger (share_dir/dev) instead of production.
+        #[arg(long)]
+        dev: bool,
     },
     /// Perf observability: is ccft slowing requests down?
     Perf {
@@ -125,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   - Run   → stdout (launchd captures it via plist).
     //   - else  → stdout, info level.
     let no_subcommand = cli.command.is_none();
-    let going_to_tui = matches!(cli.command, Some(Cmd::Tui))
+    let going_to_tui = matches!(cli.command, Some(Cmd::Tui { .. }))
         || (no_subcommand && std::io::IsTerminal::is_terminal(&std::io::stdout()));
     if !going_to_tui {
         init_tracing();
@@ -137,14 +147,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // gets updated), fall back to running the flytrap. The plist passes
         // "run" explicitly so launchd never relies on this branch.
         if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-            Cmd::Tui
+            Cmd::Tui { dev: false }
         } else {
             Cmd::Run
         }
     });
 
     match cmd {
-        Cmd::Tui => tui::run(),
+        Cmd::Tui { dev } => {
+            if dev {
+                set_dev_ledger_env();
+            }
+            tui::run()
+        }
         Cmd::Run => run_flytrap(Config::load()),
         Cmd::Dev => {
             let mut cfg = Config::load_dev();
@@ -153,10 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cfg.port = 7179;
             }
             // Re-export CCFT_LEDGER for the ledger module to pick up.
-            std::env::set_var(
-                "CCFT_LEDGER",
-                config::paths::share_dir().join("dev").join("ledger.jsonl"),
-            );
+            set_dev_ledger_env();
             run_flytrap(cfg)
         }
         Cmd::Install { label } => install::install(label),
@@ -168,20 +180,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Start => lifecycle::start(&Config::load()),
         Cmd::Stop => lifecycle::stop(&Config::load()),
         Cmd::Restart => lifecycle::restart(&Config::load()),
-        Cmd::Trust { apply, revoke, ca } => {
+        Cmd::Trust { apply, revoke, ca, dev } => {
             if ca {
                 trust::print_ca()
             } else if apply {
-                trust::apply()
+                trust::apply_with(dev)
             } else if revoke {
-                trust::revoke()
+                trust::revoke_with(dev)
             } else {
-                trust::print_instructions();
+                trust::print_instructions_with(dev);
                 Ok(())
             }
         }
         Cmd::Logs { n } => tail_logs(n),
-        Cmd::Brainrot { args } => brainrot::run(&args),
+        Cmd::Brainrot { args, dev } => {
+            if dev {
+                set_dev_ledger_env();
+            }
+            brainrot::run(&args)
+        }
         Cmd::Perf { range } => perf::run(&range.join(" ")),
         Cmd::Seed { session, since, until, dry_run } => {
             seed::run(seed::Args { session, since, until, dry_run })
@@ -194,6 +211,16 @@ fn run_flytrap(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     rt.block_on(flytrap::run(cfg))
+}
+
+/// Point the ledger/state readers at the dev ledger (share_dir/dev), exactly
+/// what `ccft dev` does. `paths::ledger()` / `paths::state()` honor
+/// $CCFT_LEDGER, so TUI/brainrot launched with `--dev` see dev traffic.
+fn set_dev_ledger_env() {
+    std::env::set_var(
+        "CCFT_LEDGER",
+        config::paths::share_dir().join("dev").join("ledger.jsonl"),
+    );
 }
 
 fn init_tracing() {

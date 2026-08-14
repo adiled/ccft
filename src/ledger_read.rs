@@ -106,7 +106,12 @@ pub fn iter_records(
 
 fn ledger_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
-    let archive = paths::share_dir().join("archive");
+    // Archive lives beside the live ledger (respects $CCFT_LEDGER), so
+    // `--dev` reads dev/archive and prod reads share_dir/archive.
+    let archive = paths::ledger()
+        .parent()
+        .unwrap_or(&paths::share_dir())
+        .join("archive");
     if archive.is_dir() {
         if let Ok(rd) = fs::read_dir(&archive) {
             let mut a: Vec<PathBuf> = rd
