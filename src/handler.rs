@@ -49,7 +49,6 @@ pub struct FlowMeta {
     pub session_id: Option<String>,
     pub started_wall: f64,
     pub ccft_us_req: u64,
-    pub endpoint: String,
     pub server_ip: Option<String>,
     /// Chars in the LAST user message of the request when it's plain text
     /// (fresh human input). 0 when the last user message is a tool_result.
@@ -428,22 +427,11 @@ impl HttpHandler for CcftHandler {
         };
 
         let _ = self.seq.fetch_add(1, Ordering::Relaxed);
-        // Preserve the actual scheme/authority so the ledger shows local
-        // OpenAI endpoints as http://localhost:11434/... not https://.
-        let scheme = parts.uri.scheme_str().unwrap_or("https");
-        let host = parts.uri.host().unwrap_or("api.anthropic.com");
-        let endpoint = format!(
-            "{}://{}{}",
-            scheme,
-            host,
-            parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/")
-        );
         let key = flow_key(&ctx.client_addr.to_string(), &parts.uri);
         let meta = FlowMeta {
             session_id,
             started_wall: now_wall_secs(),
             ccft_us_req: t0.elapsed().as_micros() as u64,
-            endpoint,
             server_ip: None,
             user_text_chars,
             tool_result_chars,

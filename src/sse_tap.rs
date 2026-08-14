@@ -167,7 +167,6 @@ impl<B> SseTap<B> {
             session_id: self.meta.session_id.as_deref(),
             client_ip: Some(&self.label),
             server_ip: self.meta.server_ip.as_deref(),
-            endpoint: &self.meta.endpoint,
             region: None,
             model: self.usage.model.as_deref(),
             input_tokens,

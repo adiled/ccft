@@ -433,7 +433,6 @@ fn synthesize_record_json(t: &Turn) -> String {
         "cip": null,
         "pip": null,
         "sip": null,
-        "ep": "https://api.anthropic.com/v1/messages",
         "reg": null,
         "model": t.model.as_deref().unwrap_or("unknown"),
         "in": t.in_tok,
