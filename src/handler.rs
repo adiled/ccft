@@ -315,8 +315,6 @@ fn mutate_openai_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
     let mut data: Value = serde_json::from_slice(body_bytes).ok()?;
     let messages = data.get_mut("messages")?.as_array_mut()?;
 
-    // Merge into the existing system message when its content is a string;
-    // otherwise (array content, or no system message) prepend a fresh one.
     let mut injected = false;
     for m in messages.iter_mut() {
         if m.get("role").and_then(Value::as_str) == Some("system") {
@@ -370,8 +368,6 @@ impl HttpHandler for CcftHandler {
         req: &Request<Body>,
     ) -> bool {
         let host = req.uri().host().unwrap_or("");
-        // CONNECT request-target is `host:port`; default to 443 when the
-        // port is implicit.
         let port = req.uri().port_u16().unwrap_or(443);
         should_flytrap_host(&self.cfg, host, port)
     }
@@ -414,9 +410,6 @@ impl HttpHandler for CcftHandler {
         let (user_text_chars, tool_result_chars) = if provider == PROVIDER_ANTHROPIC {
             extract_user_message_chars(&collected)
         } else {
-            // OpenAI messages use role:"tool" (not Anthropic's tool_result
-            // content blocks); the driver-kinetics heuristics are Anthropic-
-            // session-specific, so leave these unknown (0) for OpenAI.
             (0, 0)
         };
 

@@ -142,7 +142,6 @@ fn source_into_rcs(env: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     for rc in shell_rc_files() {
         let raw = fs::read_to_string(&rc)?;
         if raw.contains("ccft.env") {
-            // Already sourced; leave it alone.
             continue;
         }
         let out = format!("{}\n\n{}", raw.trim_end(), line);
@@ -158,12 +157,10 @@ fn unsource_from_rcs() -> Result<(), Box<dyn std::error::Error>> {
         if !raw.contains("ccft.env") {
             continue;
         }
-        // Drop every line mentioning our marker comment or the env file.
         let kept: Vec<&str> = raw
             .lines()
             .filter(|l| !l.contains("ccft flytrap trust") && !l.contains("ccft.env"))
             .collect();
-        // Trim the blank line the append left behind.
         let out = kept.join("\n").trim_end().to_string() + "\n";
         fs::write(&rc, out)?;
         println!("✓ removed ccft trust from {}", rc.display());
@@ -180,16 +177,12 @@ pub fn apply_with(dev: bool) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = cfg_for(dev);
     let label = if dev { "dev" } else { "production" };
 
-    // 1. The universal env block, sourced from shell RCs.
     let env = write_env_file(&cfg)?;
     source_into_rcs(&env)?;
 
-    // 2. Keep the Claude Code ~/.claude.json env block (pre-existing behavior,
-    //    so `claude` trusts ccft even when launched outside a sourced shell).
     let claude_json = paths::home().join(".claude.json");
     let mut data: Value = if claude_json.exists() {
         let raw = fs::read_to_string(&claude_json)?;
-        // Backup before any mutation.
         let bak = claude_json.with_extension("json.bak");
         fs::write(&bak, &raw)?;
         println!("✓ backup → {}", bak.display());
@@ -228,17 +221,14 @@ pub fn revoke() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn revoke_with(_dev: bool) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Stop sourcing the env block from every shell RC.
     unsource_from_rcs()?;
 
-    // 2. Remove the env block file itself so no stale proxy/CA lingers.
     let env = paths::env_file();
     if env.exists() {
         fs::remove_file(&env)?;
         println!("✓ removed {}", env.display());
     }
 
-    // 3. Undo the Claude Code ~/.claude.json env block.
     let claude_json = paths::home().join(".claude.json");
     if claude_json.exists() {
         let raw = fs::read_to_string(&claude_json)?;

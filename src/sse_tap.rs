@@ -76,7 +76,6 @@ impl<B> SseTap<B> {
 
     fn parse_event(&mut self, json_str: &str) {
         let Ok(d): Result<Value, _> = serde_json::from_str(json_str) else {
-            // `data: [DONE]` and any non-JSON SSE payload — ignore.
             return;
         };
 
@@ -134,7 +133,6 @@ impl<B> SseTap<B> {
         if let Some(u) = d.get("usage") {
             self.usage.input_tokens = u_u64(u, "prompt_tokens");
             self.usage.output_tokens = u_u64(u, "completion_tokens");
-            // vLLM/Ollama-style prompt-cache accounting, when present.
             if let Some(det) = u.get("prompt_tokens_details") {
                 self.usage.cache_read_input_tokens += u_u64(det, "cached_tokens");
             }
@@ -148,8 +146,6 @@ impl<B> SseTap<B> {
             .as_secs_f64();
         let latency_ms = self.started.elapsed().as_millis() as u64;
 
-        // OpenAI streams sometimes omit `usage`. Fall back to a rough
-        // chars/4 output estimate from what we actually saw stream by.
         let (input_tokens, output_tokens) = if self.meta.provider == crate::handler::PROVIDER_OPENAI {
             let out = if self.usage.output_tokens > 0 {
                 self.usage.output_tokens
