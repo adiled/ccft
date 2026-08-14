@@ -33,6 +33,17 @@ pub struct Record {
     /// Chars in the LAST user message of the request, when that message is
     /// a tool_result (bot-loop feedback). Counterpart to u_ch.
     pub tr_ch: u64,
+    /// Type-token ratio of the counted user text (lexical-diversity axis).
+    /// 0.0 = absent/too-short (older schema) — never a real value.
+    pub lex_div: f64,
+    /// Function-word fraction of the counted user text.
+    pub fn_word_frac: f64,
+    /// Bigram Shannon entropy of the counted user text (repetition axis).
+    pub ngram_entropy: f64,
+    /// Cross-turn novelty fraction (0..1): how much of this turn's content
+    /// bigrams were already seen earlier in the session. High = template
+    /// reuse ⇒ bot driving the prompt. 0.0 = absent/too-short/older schema.
+    pub nvt: f64,
 }
 
 impl Record {
@@ -56,6 +67,10 @@ impl Record {
             c_us: opt_u("c_us"),
             u_ch: u("u_ch"),
             tr_ch: u("tr_ch"),
+            lex_div: f("lxd"),
+            fn_word_frac: f("fnw"),
+            ngram_entropy: f("nge"),
+            nvt: f("nvt"),
         })
     }
 }

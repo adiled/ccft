@@ -349,7 +349,7 @@ fn walk_jsonl(dir: &Path, f: &mut dyn FnMut(&Path)) {
     }
 }
 
-/// Mirror of `handler.rs::extract_user_message_chars`. The JSONL stores the
+/// Mirror of `handler.rs::extract_user_message_lex`. The JSONL stores the
 /// same message structure as the API request body; we re-implement here
 /// rather than share to keep the live request hot path free of any shared
 /// parsing module.
@@ -454,6 +454,10 @@ fn synthesize_record_json(t: &Turn) -> String {
         "c_us": 0,
         "u_ch": t.u_ch,
         "tr_ch": t.tr_ch,
+        "lxd": 0.0,
+        "fnw": 0.0,
+        "nge": 0.0,
+        "nvt": 0.0,
     }).to_string()
 }
 

@@ -127,6 +127,427 @@ pub fn classify_turns(records: &[Record]) -> Vec<TurnKind> {
     kinds
 }
 
+// ─── Probabilistic turn classification ──────────────────────────────────────
+//
+// `classify_turns` above uses a hardcoded `BOT_LOOP_THRESHOLD` (5s): any
+// in-session gap > 5s is a driver turn, else a bot continuation. That magic
+// constant is brittle — it can't adapt to a user whose tool loops are
+// consistently 8s (a slow tool), nor to a fast typist whose think-gaps are
+// 3s. The probabilistic classifier fits a 2-component log-normal mixture to
+// the pooled inter-arrival gaps and classifies each turn by *posterior
+// probability*, replacing the fixed 5s cut with a learned decision boundary.
+//
+// It is a strict drop-in for `classify_turns` (same input, same `Vec<TurnKind>`
+// output, same first-in-session + `_orphan` semantics) and is fully
+// self-contained: it needs no extra state and no dependency on the
+// regime-change / time-series work. When the fit is unstable it falls back
+// to the deterministic classifier, so it's safe to swap in anywhere.
+
+/// Half of ln(2π) = 0.9189…, the normalizer of the log-normal pdf.
+const LN_2PI_HALF: f64 = 0.9189385332046727;
+/// A component must own at least this many gaps or the fit is refused.
+/// Kept low (2) so the model works on small windows / thin driver clusters;
+/// EM + MIN_PRIOR + the deterministic fallback are the real degeneracy guards.
+const MIN_GAPS_PER_COMPONENT: usize = 2;
+/// A fitted prior below this is treated as component collapse → fallback.
+const MIN_PRIOR: f64 = 0.02;
+/// Log-normal sigma floor: prevents a component from collapsing to a point.
+const SIGMA_FLOOR: f64 = 0.1;
+const EM_MAX_ITERS: u32 = 120;
+const EM_TOL: f64 = 1e-7;
+
+/// Minimum counted user-text chars before the wordology (lexical) axis is
+/// trusted. Short prompts have inflated type-token ratio and low n-gram
+/// entropy regardless of author, so the lexical signal is skipped below this.
+const MIN_LEX_CHARS: u64 = 40;
+
+/// Fitted 2-component log-normal mixture over pooled inter-arrival gaps.
+/// "bot" is always the short-gap component (tool-loop continuation), "drv"
+/// the long-gap component (human think/type time). `threshold_sec` is the
+/// learned decision boundary — the gap where the posterior of "bot" crosses
+/// 0.5 — which replaces the hardcoded `BOT_LOOP_THRESHOLD`.
+#[derive(Clone, Debug)]
+pub struct GapMixture {
+    pub pi_bot: f64,
+    pub mu_bot: f64,    // ln-median of bot gaps
+    pub sigma_bot: f64, // log-spread of bot gaps
+    pub pi_drv: f64,
+    pub mu_drv: f64,
+    pub sigma_drv: f64,
+    pub n_gaps: usize,
+    pub threshold_sec: f64,
+    pub log_lik: f64,
+    pub iterations: u32,
+}
+
+/// Pooled inter-arrival gaps across all sessions: for each record after the
+/// first in a session, elapsed seconds from the previous response end.
+/// Mirrors the gap logic in `classify_turns` exactly so the probabilistic
+/// classifier sees the same data the deterministic one does.
+fn pooled_gaps(records: &[Record]) -> Vec<f64> {
+    let mut gaps: Vec<f64> = Vec::new();
+    let mut by_sid: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, r) in records.iter().enumerate() {
+        let sid = r.sid.clone().unwrap_or_else(|| "_orphan".into());
+        by_sid.entry(sid).or_default().push(i);
+    }
+    for (_sid, mut idxs) in by_sid {
+        idxs.sort_by(|a, b| {
+            records[*a]
+                .ts
+                .partial_cmp(&records[*b].ts)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut prev_te: Option<f64> = None;
+        for i in &idxs {
+            let r = &records[*i];
+            let te = if r.te > 0.0 { r.te } else { r.ts };
+            if let Some(prev) = prev_te {
+                let g = r.ts - prev;
+                if g > 1e-6 {
+                    gaps.push(g);
+                }
+            }
+            prev_te = Some(te);
+        }
+    }
+    gaps
+}
+
+/// (ln-mean, ln-std) of a positive sample.
+fn ln_moments(xs: &[f64]) -> (f64, f64) {
+    let n = xs.len() as f64;
+    let mu = xs.iter().map(|x| x.ln()).sum::<f64>() / n;
+    let var = xs.iter().map(|x| (x.ln() - mu).powi(2)).sum::<f64>() / n;
+    (mu, var.max(0.0).sqrt())
+}
+
+fn ln_pdf_lnorm(g: f64, mu: f64, sigma: f64) -> f64 {
+    let z = (g.ln() - mu) / sigma;
+    -(z * z) / 2.0 - g.ln() - sigma.ln() - LN_2PI_HALF
+}
+
+fn posterior_bot(g: f64, mu_b: f64, sg_b: f64, pi_b: f64, mu_d: f64, sg_d: f64, pi_d: f64) -> f64 {
+    let l_b = ln_pdf_lnorm(g, mu_b, sg_b) + pi_b.ln();
+    let l_d = ln_pdf_lnorm(g, mu_d, sg_d) + pi_d.ln();
+    let m = l_b.max(l_d);
+    let e_b = (l_b - m).exp();
+    let e_d = (l_d - m).exp();
+    e_b / (e_b + e_d)
+}
+
+/// Where does posterior("bot") cross 0.5? Binary search between the two
+/// component medians (posterior is monotone decreasing across that band).
+/// Falls back to the geometric midpoint when there's no clean crossing.
+fn crossover_gap(mu_b: f64, sg_b: f64, pi_b: f64, mu_d: f64, sg_d: f64, pi_d: f64) -> f64 {
+    let lo = mu_b.min(mu_d).exp();
+    let hi = mu_b.max(mu_d).exp();
+    let p_lo = posterior_bot(lo, mu_b, sg_b, pi_b, mu_d, sg_d, pi_d);
+    let p_hi = posterior_bot(hi, mu_b, sg_b, pi_b, mu_d, sg_d, pi_d);
+    if p_lo <= 0.5 || p_hi >= 0.5 {
+        return (lo * hi).sqrt();
+    }
+    let mut lo = lo;
+    let mut hi = hi;
+    for _ in 0..60 {
+        let mid = (lo + hi) / 2.0;
+        if posterior_bot(mid, mu_b, sg_b, pi_b, mu_d, sg_d, pi_d) > 0.5 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (lo + hi) / 2.0
+}
+
+/// Fit a 2-component log-normal mixture to pooled gaps by EM, warm-started
+/// from the deterministic 5s threshold when it can see both clusters,
+/// else a median split (handles "slow tool" sessions where every loop gap
+/// exceeds 5s). Returns None when the data can't support a stable split —
+/// callers fall back to `classify_turns`.
+pub fn fit_gap_mixture(records: &[Record]) -> Option<GapMixture> {
+    let gaps = pooled_gaps(records);
+    let n = gaps.len();
+    if n < MIN_GAPS_PER_COMPONENT * 2 {
+        return None;
+    }
+
+    let split = |cut: f64| {
+        (
+            gaps.iter().copied().filter(|g| *g <= cut).collect::<Vec<f64>>(),
+            gaps.iter().copied().filter(|g| *g > cut).collect::<Vec<f64>>(),
+        )
+    };
+    let (bot, drv) = {
+        let (b, d) = split(BOT_LOOP_THRESHOLD);
+        if b.len() >= MIN_GAPS_PER_COMPONENT && d.len() >= MIN_GAPS_PER_COMPONENT {
+            (b, d)
+        } else {
+            let mut sorted = gaps.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            split(sorted[sorted.len() / 2])
+        }
+    };
+    if bot.len() < MIN_GAPS_PER_COMPONENT || drv.len() < MIN_GAPS_PER_COMPONENT {
+        return None;
+    }
+
+    let (m_b, s_b) = ln_moments(&bot);
+    let (m_d, s_d) = ln_moments(&drv);
+    let mut pi_b = bot.len() as f64 / n as f64;
+    let mut pi_d = 1.0 - pi_b;
+    let mut mu_b = m_b;
+    let mut sigma_b = s_b.max(SIGMA_FLOOR);
+    let mut mu_d = m_d;
+    let mut sigma_d = s_d.max(SIGMA_FLOOR);
+
+    let mut ll = f64::NEG_INFINITY;
+    let mut iters = 0u32;
+    for _ in 0..EM_MAX_ITERS {
+        iters += 1;
+        // E-step
+        let mut s_b = 0.0;
+        let mut s_d = 0.0;
+        let mut s_b_ln = 0.0;
+        let mut s_d_ln = 0.0;
+        let mut s_b_l2 = 0.0;
+        let mut s_d_l2 = 0.0;
+        let mut new_ll = 0.0;
+        for g in &gaps {
+            let l_b = ln_pdf_lnorm(*g, mu_b, sigma_b) + pi_b.ln();
+            let l_d = ln_pdf_lnorm(*g, mu_d, sigma_d) + pi_d.ln();
+            let m = l_b.max(l_d);
+            let e_b = (l_b - m).exp();
+            let e_d = (l_d - m).exp();
+            let denom = e_b + e_d;
+            let gb = e_b / denom;
+            let gd = e_d / denom;
+            s_b += gb;
+            s_d += gd;
+            let lng = g.ln();
+            s_b_ln += gb * lng;
+            s_d_ln += gd * lng;
+            s_b_l2 += gb * lng * lng;
+            s_d_l2 += gd * lng * lng;
+            new_ll += m + denom.ln();
+        }
+        if s_b < 1e-9 || s_d < 1e-9 {
+            return None; // one component owns every gap
+        }
+        // M-step
+        pi_b = s_b / n as f64;
+        pi_d = s_d / n as f64;
+        if pi_b < MIN_PRIOR || pi_d < MIN_PRIOR {
+            return None;
+        }
+        mu_b = s_b_ln / s_b;
+        mu_d = s_d_ln / s_d;
+        sigma_b = (s_b_l2 / s_b - mu_b * mu_b).max(0.0).sqrt().max(SIGMA_FLOOR);
+        sigma_d = (s_d_l2 / s_d - mu_d * mu_d).max(0.0).sqrt().max(SIGMA_FLOOR);
+        let dll = new_ll - ll;
+        ll = new_ll;
+        if dll.abs() < EM_TOL * (1.0 + ll.abs()) {
+            break;
+        }
+    }
+
+    // Keep "bot" = short-gap component (warm start should preserve order,
+    // but guard against a swapped convergence).
+    if mu_b > mu_d {
+        std::mem::swap(&mut pi_b, &mut pi_d);
+        std::mem::swap(&mut mu_b, &mut mu_d);
+        std::mem::swap(&mut sigma_b, &mut sigma_d);
+    }
+
+    let threshold_sec = crossover_gap(mu_b, sigma_b, pi_b, mu_d, sigma_d, pi_d);
+    Some(GapMixture {
+        pi_bot: pi_b,
+        mu_bot: mu_b,
+        sigma_bot: sigma_b,
+        pi_drv: pi_d,
+        mu_drv: mu_d,
+        sigma_drv: sigma_d,
+        n_gaps: n,
+        threshold_sec,
+        log_lik: ll,
+        iterations: iters,
+    })
+}
+
+/// Session-level momentum context for the wordology axis: evidence that
+/// accumulates across a session's turns, not per-message.
+#[derive(Clone, Copy, Default)]
+struct MomCtx {
+    /// Coefficient of variation of plain-text size across this session's
+    /// turns (burstiness). Low = uniform, template-sized prompts ⇒ a bot
+    /// driving; high = bursty, human-sized typing. `-1.0` = not enough turns
+    /// to measure (no signal).
+    cv_size: f64,
+}
+
+/// How machine-like is this turn's *prompt text*? A 0..1 likelihood that
+/// the plain-text user message was authored by a bot rather than a human:
+///   * `tr_ch > 0`   — a tool_result continuation is bot feedback by
+///                     construction → certain bot (1.0).
+///   * `u_ch` too low — no text to analyze → no signal (None).
+///   * `lex_div == 0` — older-schema record → no lexical signal (None).
+///   * otherwise, the wordology features — low lexical diversity (repetition),
+///     low bigram entropy (repetition), low function-word fraction → machine.
+///
+/// This is the *second axis* that gap timing can't see: a bot controlling
+/// the prompting writes plain text that paces like a human (so gap says
+/// "driver") but is machine-flat in the words. It's a heuristic prior
+/// grounded in stylometry's direction of effects (repetition ⇒ machine),
+/// NOT a fitted model — the ledger has no labels to train on.
+///
+/// Momentum (cross-turn) terms fold in `mom` + the record's `nvt`:
+///   * `nvt` high — the same content bigrams keep coming back turn after
+///     turn (template reuse ⇒ a bot driving the prompting). Captured at the
+///     proxy against an in-memory per-session set; only the fraction persists.
+///   * `cv_size` low — prompt sizes are uniform (template-sized ⇒ machine);
+///     high/absent means human burstiness → no signal.
+fn machine_likeness(r: &Record, mom: &MomCtx) -> Option<f64> {
+    if r.tr_ch > 0 {
+        return Some(1.0);
+    }
+    if r.u_ch < MIN_LEX_CHARS || r.lex_div <= 0.0 {
+        return None;
+    }
+    // n-gram entropy scale: bigrams on ≥40 chars of prose sit roughly 2–6 bits.
+    let p_nge = 1.0 - (r.ngram_entropy / 4.0).clamp(0.0, 1.0);
+    // lexical diversity: low TTR ⇒ repetitive ⇒ machine.
+    let p_ttr = 1.0 - r.lex_div.clamp(0.0, 1.0);
+    // function-word fraction: humans lean on them; models are content-dense.
+    let p_fnx = 1.0 - (r.fn_word_frac / 0.5).clamp(0.0, 1.0);
+    let mut p = 0.5 * p_ttr + 0.35 * p_nge + 0.15 * p_fnx;
+    // Momentum terms only REINFORCE a machine-leaning read — they never
+    // override a clearly human one. Both are gated behind p > 0.5.
+    if p > 0.5 {
+        // Momentum 1 — cross-turn template reuse. A near-total repeat (nvt
+        // ~0.9) is the smoking gun; moderate reuse just nudges the read.
+        if r.nvt > 0.0 {
+            p = 0.5 * p + 0.5 * r.nvt.clamp(0.0, 1.0);
+        }
+        // Momentum 2 — session burstiness. Uniform prompt sizes (cv≈0) ⇒ a
+        // bot emitting template-sized prompts; bursty human typing ⇒ no nudge.
+        if mom.cv_size >= 0.0 {
+            let p_burst = 1.0 - (mom.cv_size / 0.5).clamp(0.0, 1.0);
+            p = 0.7 * p + 0.3 * p_burst;
+        }
+    }
+    Some(p.clamp(0.0, 1.0))
+}
+
+/// Probabilistic turn classifier — drop-in for `classify_turns`. Fits a
+/// 2-component log-normal mixture over pooled gaps and labels each turn by
+/// posterior probability (short-gap/bot posterior > 0.5 → Bot), then fuses
+/// the wordology axis (`machine_likeness`) as a second, content-free signal
+/// that corrects the pacing proxy where it's confident: machine-flat text
+/// forces Bot even when the gap was long (the "another bot driving" case);
+/// clearly human text forces Driver even when the gap was short (a fast
+/// typist). Falls back to the deterministic 5s classifier when the fit is
+/// unstable, so it is safe to substitute everywhere `classify_turns` is used.
+pub fn classify_turns_prob(records: &[Record]) -> Vec<TurnKind> {
+    classify_turns_prob_with_model(records).0
+}
+
+/// As above but also returns the fitted model (`None` when it fell back to
+/// the deterministic threshold). Lets callers surface "your learned bot-loop
+/// gap is ~Xs, your human turn gap is ~Ys, decision boundary ~Zs" and is
+/// what the tests assert against.
+pub fn classify_turns_prob_with_model(records: &[Record]) -> (Vec<TurnKind>, Option<GapMixture>) {
+    let mut kinds = vec![TurnKind::Driver; records.len()];
+    if records.is_empty() {
+        return (kinds, None);
+    }
+    let mix = fit_gap_mixture(records);
+    let mut by_sid: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, r) in records.iter().enumerate() {
+        let sid = r.sid.clone().unwrap_or_else(|| "_orphan".into());
+        by_sid.entry(sid).or_default().push(i);
+    }
+    for (_sid, mut idxs) in by_sid {
+        idxs.sort_by(|a, b| {
+            records[*a]
+                .ts
+                .partial_cmp(&records[*b].ts)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        // Momentum: this session's burstiness (CV of plain-text size).
+        // Uniform template-sized prompts ⇒ machine; bursty ⇒ human. -1 = no
+        // measurement (fewer than two plain-text turns).
+        let sizes: Vec<f64> = idxs
+            .iter()
+            .filter(|i| records[**i].u_ch > 0)
+            .map(|i| records[*i].u_ch as f64)
+            .collect();
+        let cv_size = if sizes.len() >= 2 {
+            let mean = sizes.iter().sum::<f64>() / sizes.len() as f64;
+            if mean > 0.0 {
+                let var = sizes
+                    .iter()
+                    .map(|s| (s - mean) * (s - mean))
+                    .sum::<f64>()
+                    / sizes.len() as f64;
+                var.sqrt() / mean
+            } else {
+                -1.0
+            }
+        } else {
+            -1.0
+        };
+        let mom = MomCtx { cv_size };
+        let mut prev_te: Option<f64> = None;
+        for i in &idxs {
+            let r = &records[*i];
+            let te = if r.te > 0.0 { r.te } else { r.ts };
+            // Pacing prior: the gap-mixture posterior when the fit succeeded,
+            // else the deterministic 5s rule (a hard 0/1 pacing prior).
+            let p_gap = match prev_te {
+                None => 0.0,
+                Some(prev) => match &mix {
+                    Some(m) => posterior_bot(
+                        r.ts - prev,
+                        m.mu_bot,
+                        m.sigma_bot,
+                        m.pi_bot,
+                        m.mu_drv,
+                        m.sigma_drv,
+                        m.pi_drv,
+                    ),
+                    None => {
+                        if r.ts - prev > BOT_LOOP_THRESHOLD {
+                            0.0
+                        } else {
+                            1.0
+                        }
+                    }
+                },
+            };
+            let mut p = p_gap;
+            // Wordology axis: correct the pacing proxy where it's confident.
+            // tr_ch>0 or machine-flat text ⇒ bot even on a long gap ("another
+            // bot driving the prompting"); clearly human text ⇒ driver even on
+            // a fast gap (a fast typist). Runs on top of *either* prior, so it
+            // also rescues the all-slow session where no gap mixture fits.
+            if let Some(p_lex) = machine_likeness(r, &mom) {
+                if p_lex >= 0.65 {
+                    // machine-flat text (or tr_ch>0) ⇒ bot even on a long gap
+                    p = p.max(0.75);
+                } else if p_lex <= 0.25 {
+                    // clearly human text ⇒ driver even on a fast gap
+                    p = p.min(0.25);
+                } else {
+                    p = 0.6 * p + 0.4 * p_lex;
+                }
+            }
+            kinds[*i] = if p > 0.5 { TurnKind::Bot } else { TurnKind::Driver };
+            prev_te = Some(te);
+        }
+    }
+    (kinds, mix)
+}
+
 fn quantile(xs: &mut [f64], q: f64) -> f64 {
     if xs.is_empty() {
         return 0.0;
@@ -996,4 +1417,258 @@ pub fn short_model(m: &str) -> String {
         String::new()
     };
     format!("{}{}", name, ver)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(ts: f64, sid: &str) -> Record {
+        Record {
+            ts,
+            te: ts + 0.001, // response end ~ request start so gaps ≈ g
+            model: Some("claude-3-5-sonnet".into()),
+            sid: Some(sid.into()),
+            r#in: 10,
+            out: 20,
+            tot: 30,
+            lat: 1000,
+            cr: 0,
+            cc: 0,
+            c_us: None,
+            u_ch: 0,
+            tr_ch: 0,
+            lex_div: 0.0,
+            fn_word_frac: 0.0,
+            ngram_entropy: 0.0,
+            nvt: 0.0,
+        }
+    }
+
+    /// A plain-text user turn with explicit wordology features (u_ch chars,
+    /// lex_div / fn_word_frac / ngram_entropy / nvt novelty).
+    fn rec_lex(ts: f64, sid: &str, u_ch: u64, lex_div: f64, fnw: f64, nge: f64, nvt: f64) -> Record {
+        let mut r = rec(ts, sid);
+        r.u_ch = u_ch;
+        r.lex_div = lex_div;
+        r.fn_word_frac = fnw;
+        r.ngram_entropy = nge;
+        r.nvt = nvt;
+        r
+    }
+
+    /// Build a session as (start_ts, [gap, kind...]): each gap is seconds
+    /// after the previous response end; `kind` is the *expected* label.
+    fn session(gaps: &[(f64, TurnKind)]) -> Vec<Record> {
+        let mut out = Vec::new();
+        let mut ts = 0.0;
+        out.push(rec(ts, "s1"));
+        for (g, _k) in gaps {
+            ts += *g;
+            out.push(rec(ts, "s1"));
+        }
+        out
+    }
+
+    fn bot_count(kinds: &[TurnKind]) -> usize {
+        kinds.iter().filter(|k| **k == TurnKind::Bot).count()
+    }
+
+    #[test]
+    fn clean_fast_loops_agree_with_deterministic() {
+        // Fast tool loops (0.5–2s) + long human turns (30–60s): the hardcoded
+        // 5s cut and the learned boundary should both see the same split.
+        let recs = session(&[
+            (0.5, TurnKind::Bot),
+            (1.0, TurnKind::Bot),
+            (2.0, TurnKind::Bot),
+            (45.0, TurnKind::Driver),
+            (1.5, TurnKind::Bot),
+            (1.0, TurnKind::Bot),
+            (60.0, TurnKind::Driver),
+        ]);
+        let det = classify_turns(&recs);
+        let (prob, mix) = classify_turns_prob_with_model(&recs);
+        let mix = mix.expect("fit should succeed");
+        assert_eq!(bot_count(&det), bot_count(&prob), "clean case: counts should match");
+        assert!(mix.mu_bot.exp() < 5.0, "bot median should be ~1-2s");
+        assert!(mix.mu_drv.exp() > 20.0, "driver median should be tens of seconds");
+        assert!(
+            mix.mu_bot.exp() < mix.threshold_sec && mix.threshold_sec < mix.mu_drv.exp(),
+            "learned boundary should sit between the two modes"
+        );
+        // The learned boundary is *this user's* crossover, not a magic 5s: it
+        // must sit between the two fitted modes. (With all loops <2s and turns
+        // ~50s it legitimately lands ~20s — gaps up to there are still bot.)
+        assert_eq!(prob[0], TurnKind::Driver, "first turn is always Driver");
+    }
+
+    #[test]
+    fn slow_tool_loops_fix_deterministic_mislabel() {
+        // The money test: a "slow tool" session where every loop gap is ~8s.
+        // The deterministic classifier (gap > 5s ⇒ Driver) labels ALL of them
+        // as Driver — it can't see a bot cluster at all. The learned mixture
+        // should find the ~8s bot component and correctly reclassify them.
+        let recs = session(&[
+            (8.0, TurnKind::Bot),
+            (8.0, TurnKind::Bot),
+            (8.0, TurnKind::Bot),
+            (8.0, TurnKind::Bot),
+            (60.0, TurnKind::Driver),
+            (8.0, TurnKind::Bot),
+            (8.0, TurnKind::Bot),
+            (90.0, TurnKind::Driver),
+        ]);
+        let det = classify_turns(&recs);
+        let (prob, mix) = classify_turns_prob_with_model(&recs);
+        let mix = mix.expect("median-split warm start should fit");
+        assert_eq!(bot_count(&det), 0, "deterministic sees no bot cluster here");
+        assert!(bot_count(&prob) > 0, "probabilistic should recover the bot cluster");
+        assert!(
+            mix.threshold_sec > 5.0 && mix.threshold_sec < 60.0,
+            "learned boundary should sit between the 8s and 60s modes, got {}",
+            mix.threshold_sec
+        );
+        assert!((mix.mu_bot.exp() - 8.0).abs() < 3.0, "bot median ≈ 8s");
+    }
+
+    #[test]
+    fn degenerate_data_falls_back_to_deterministic() {
+        // All gaps nearly identical → no stable 2-component split → must fall
+        // back to the deterministic classifier (never panic, never invent).
+        let recs = session(&[
+            (3.0, TurnKind::Bot),
+            (3.0, TurnKind::Bot),
+            (3.0, TurnKind::Bot),
+            (3.0, TurnKind::Bot),
+        ]);
+        let det = classify_turns(&recs);
+        let (prob, mix) = classify_turns_prob_with_model(&recs);
+        assert!(mix.is_none(), "degenerate data should refuse the fit");
+        assert_eq!(bot_count(&det), bot_count(&prob), "fallback = deterministic");
+        assert_eq!(prob[0], TurnKind::Driver);
+    }
+
+    #[test]
+    fn empty_input_is_safe() {
+        let (kinds, mix) = classify_turns_prob_with_model(&[]);
+        assert!(kinds.is_empty());
+        assert!(mix.is_none());
+    }
+
+    #[test]
+    fn wordology_rescues_all_slow_bot_pacing() {
+        // The money case for the second (wordology) axis: a bot controls the
+        // prompting, paces like a human (every gap slow), and writes
+        // machine-flat plain text. Gap alone can't see it — the deterministic
+        // classifier says all Driver and there's no fast cluster to fit a
+        // mixture — but the lexical signal forces Bot on the flat text.
+        let mut recs = vec![rec(0.0, "s1")];
+        let mut ts = 0.0;
+        for _ in 0..3 {
+            ts += 12.0;
+            // machine-flat: low TTR, low n-gram entropy, low fn-word fraction
+            recs.push(rec_lex(ts, "s1", 90, 0.25, 0.20, 1.2, 0.0));
+        }
+        let det = classify_turns(&recs);
+        let (prob, _mix) = classify_turns_prob_with_model(&recs);
+        assert_eq!(bot_count(&det), 0, "gap-only sees no bot cluster here");
+        assert!(bot_count(&prob) > 0, "wordology should force the bot turns");
+        for i in 1..recs.len() {
+            assert_eq!(prob[i], TurnKind::Bot, "machine-flat slow turn must be Bot");
+        }
+    }
+
+    #[test]
+    fn wordology_human_words_keep_fast_turns_driver() {
+        // Reverse correction: a fast typist (short gaps, so pacing says Bot)
+        // whose words are clearly human should stay a Driver.
+        let mut recs = vec![rec(0.0, "s1")];
+        let mut ts = 0.0;
+        for _ in 0..3 {
+            ts += 1.5;
+            // human-varied: high TTR, high n-gram entropy, high fn-word frac
+            recs.push(rec_lex(ts, "s1", 120, 0.85, 0.60, 4.2, 0.0));
+        }
+        let det = classify_turns(&recs);
+        let (prob, _mix) = classify_turns_prob_with_model(&recs);
+        assert_eq!(bot_count(&det), 3, "gap-only calls a fast typist a bot");
+        assert_eq!(bot_count(&prob), 0, "wordology keeps a fast typist a driver");
+    }
+
+    #[test]
+    fn wordology_tool_result_forces_bot_on_slow_loop() {
+        // tr_ch>0 is bot feedback by construction; even a very slow loop must
+        // be Bot. This is the lexical axis rescuing the deterministic 5s rule.
+        let mut recs = vec![rec(0.0, "s1")];
+        let mut ts = 0.0;
+        for _ in 0..3 {
+            ts += 30.0;
+            let mut r = rec(ts, "s1");
+            r.tr_ch = 500;
+            recs.push(r);
+        }
+        let det = classify_turns(&recs);
+        let (prob, _mix) = classify_turns_prob_with_model(&recs);
+        assert_eq!(bot_count(&det), 0, "gap-only sees slow tool loops as driver");
+        assert_eq!(bot_count(&prob), 3, "tr_ch forces bot regardless of pacing");
+    }
+
+    #[test]
+    fn wordology_cross_turn_template_reuse_rescues_slow_bot() {
+        // A bot repeats the same template across turns: per-message features
+        // are only mid (not confident alone), but nvt ~0.9 (near-total reuse)
+        // is the smoking gun. Gap sees slow pacing ⇒ Driver; momentum forces
+        // Bot — this is the case per-message judgement alone would dodge.
+        let mut recs = vec![rec(0.0, "s1")];
+        let mut ts = 0.0;
+        for _ in 0..3 {
+            ts += 12.0;
+            // mid per-message (lex_div .35, nge 1.8, fnw .28) + near-total reuse
+            recs.push(rec_lex(ts, "s1", 90, 0.35, 0.28, 1.8, 0.9));
+        }
+        let det = classify_turns(&recs);
+        let (prob, _mix) = classify_turns_prob_with_model(&recs);
+        assert_eq!(bot_count(&det), 0, "gap-only sees template reuse as driver");
+        for i in 1..recs.len() {
+            assert_eq!(prob[i], TurnKind::Bot, "template reuse must force Bot");
+        }
+    }
+
+    #[test]
+    fn wordology_uniform_sizes_mark_template_bot_but_bursty_stays_driver() {
+        // Same mid per-message text, same slow pacing, same turn count: the
+        // ONLY difference is burstiness. Uniform template-sized prompts ⇒ Bot;
+        // bursty human-sized prompts ⇒ Driver. That's momentum, not per-message.
+        let mut uniform = vec![rec(0.0, "u")];
+        let mut ts = 0.0;
+        for _ in 0..4 {
+            ts += 12.0;
+            uniform.push(rec_lex(ts, "u", 90, 0.35, 0.28, 1.8, 0.0));
+        }
+        let mut bursty = vec![rec(0.0, "b")];
+        ts = 0.0;
+        for sz in [45u64, 80, 150, 200] {
+            ts += 12.0;
+            bursty.push(rec_lex(ts, "b", sz, 0.35, 0.28, 1.8, 0.0));
+        }
+        let (u_prob, _) = classify_turns_prob_with_model(&uniform);
+        let (b_prob, _) = classify_turns_prob_with_model(&bursty);
+        for i in 1..uniform.len() {
+            assert_eq!(u_prob[i], TurnKind::Bot, "uniform template sizes ⇒ Bot");
+        }
+        for i in 1..bursty.len() {
+            assert_eq!(b_prob[i], TurnKind::Driver, "bursty human sizes ⇒ Driver");
+        }
+    }
+
+    #[test]
+    fn posterior_is_a_probability() {
+        // Sanity: posterior_bot is bounded [0,1] and monotone across a band.
+        let p_small = posterior_bot(1.0, 0.5, 0.6, 0.7, 3.5, 0.9, 0.3);
+        let p_mid = posterior_bot(20.0, 0.5, 0.6, 0.7, 3.5, 0.9, 0.3);
+        let p_big = posterior_bot(200.0, 0.5, 0.6, 0.7, 3.5, 0.9, 0.3);
+        assert!((0.0..=1.0).contains(&p_small) && (0.0..=1.0).contains(&p_mid) && (0.0..=1.0).contains(&p_big));
+        assert!(p_small > p_mid && p_mid > p_big, "short gap ⇒ more likely bot");
+    }
 }

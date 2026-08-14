@@ -7,7 +7,7 @@
 //! fill, not by what it shows.
 
 use crate::brainrot::aggregate::{
-    bot_score, classify_turns, diagnosis, driver_score, short_model, vibe_label, TurnKind,
+    bot_score, classify_turns_prob, diagnosis, driver_score, short_model, vibe_label, TurnKind,
 };
 use crate::tui::style;
 use crate::tui::App;
@@ -275,7 +275,7 @@ fn compute_split(app: &App) -> Option<SplitSummary> {
     if records.is_empty() {
         return None;
     }
-    let kinds = classify_turns(records);
+    let kinds = classify_turns_prob(records);
 
     let mut drv_n = 0u64;
     let mut bot_n = 0u64;

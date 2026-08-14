@@ -56,7 +56,7 @@ usage: ccft brainrot [subcommand] [args]
   today [range]    dashboard for a range
   week             7-day rollup
   score [range]    one-line bot/driver score (good for status bars)
-  split [range]    driver vs bot turn split — who's doing the work?
+  split [range]    driver vs bot turn split (learned gap model; --det = old 5s rule)
   session [sid]    list sessions today, or drill into one
   replay [range]   animated playback  [--speed N]  [--follow]
   diff A B         compare two ranges

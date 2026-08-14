@@ -37,9 +37,22 @@ Each line in `~/.local/share/ccft/ledger.jsonl`:
   "cip": "127.0.0.1:54188", "pip": "124.29.237.112", "sip": null,
   "reg": null, "model": "claude-haiku-4-5-20251001",
   "in": 520, "out": 84, "tot": 604, "lat": 758,
-  "cr": 0, "cc": 0, "c_us": 115
+  "cr": 0, "cc": 0, "c_us": 115,
+  "u_ch": 0, "tr_ch": 0, "lxd": 0.0, "fnw": 0.0, "nge": 0.0, "nvt": 0.0
 }
 ```
+
+`u_ch`/`tr_ch` are char counts of the LAST user message, split by content
+type: `u_ch` = plain text (fresh human input), `tr_ch` = a `tool_result`
+(bot-loop continuation). `lxd` (type-token ratio), `fnw` (function-word
+fraction) and `nge` (bigram entropy) are lexical stats of the counted user
+text — a content-free "wordology" axis fused into the bot/driver split
+classifier. `nvt` is the cross-turn momentum axis: how much of the text's
+content bigrams were already seen earlier in the session (template reuse ⇒
+a bot driving the prompt). It's computed at the proxy against an in-memory
+per-session set; only the fraction is persisted, never the bigrams. All are
+`0.0` when text is absent or too short (older schema), which the classifier
+treats as "no signal".
 
 The TUI brainrot panel reads this file as-is.
 

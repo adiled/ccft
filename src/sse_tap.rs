@@ -179,6 +179,10 @@ impl<B> SseTap<B> {
             ccft_us: self.meta.ccft_us_req,
             user_text_chars: self.meta.user_text_chars,
             tool_result_chars: self.meta.tool_result_chars,
+            lex_div: self.meta.lex_div,
+            fn_word_frac: self.meta.fn_word_frac,
+            ngram_entropy: self.meta.ngram_entropy,
+            novelty: self.meta.novelty,
         };
 
         ledger::append(&rec);

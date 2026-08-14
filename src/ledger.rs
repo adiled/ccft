@@ -2,12 +2,19 @@
 //! Schema mirrors cc-flytrap/ledger.py with two additions:
 //!
 //!   { ts, te, dt, human, agent, sid, cip, pip, sip, ep, reg, model,
-//!     in, out, tot, lat, cr, cc, c_us, u_ch, tr_ch }
+//!     in, out, tot, lat, cr, cc, c_us, u_ch, tr_ch, lxd, fnw, nge }
 //!
 //! `u_ch`/`tr_ch` are the char counts of the LAST user message in the
 //! request body, split by content type:
 //!   * u_ch  — chars when the message is plain text (fresh human input)
 //!   * tr_ch — chars when the message is a tool_result (bot continuation)
+//! `lxd`/`fnw`/`nge` are lexical stats (type-token ratio, function-word
+//! fraction, bigram entropy) of the counted user text — a second,
+//! content-free "wordology" axis for detecting bot-driven prompting.
+//! `nvt` is the cross-turn momentum axis: how much of the text's content
+//! bigrams were already seen earlier in the session (template reuse ⇒ a
+//! bot driving the prompt). Computed against an in-memory per-session set;
+//! only the fraction is persisted, never the bigrams themselves.
 //! Old records lacking these fields default to 0 on read; the driver
 //! score function refuses to compute against an empty u_ch baseline.
 //!
@@ -112,6 +119,19 @@ pub struct LedgerRecord<'a> {
     /// Chars in the LAST user message when it's a tool_result (bot-loop
     /// continuation feedback). Counterpart to user_text_chars.
     pub tool_result_chars: u64,
+    /// Type-token ratio of the counted user text (lexical-diversity axis).
+    /// 0.0 when absent/too-short — see the wordology classifier in
+    /// brainrot/aggregate.rs.
+    pub lex_div: f64,
+    /// Function-word fraction of the counted user text.
+    pub fn_word_frac: f64,
+    /// Bigram Shannon entropy of the counted user text (repetition axis).
+    pub ngram_entropy: f64,
+    /// Cross-turn novelty fraction (0..1) of the counted user text: how much
+    /// of its content bigrams were already seen earlier in the session.
+    /// High = template reuse ⇒ a bot driving the prompt; low = novel ⇒ human.
+    /// 0.0 = no signal (no session / too short / older schema).
+    pub novelty: f64,
 }
 
 pub fn append(rec: &LedgerRecord) {
@@ -143,6 +163,10 @@ pub fn append(rec: &LedgerRecord) {
         "c_us": rec.ccft_us,
         "u_ch": rec.user_text_chars,
         "tr_ch": rec.tool_result_chars,
+        "lxd": rec.lex_div,
+        "fnw": rec.fn_word_frac,
+        "nge": rec.ngram_entropy,
+        "nvt": rec.novelty,
     })
     .to_string();
 

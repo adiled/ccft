@@ -1,14 +1,24 @@
-//! split — driver vs bot turn split. Classifies turns by inter-arrival gap:
-//! first turn or gap > 5s = driver-initiated, else bot continuation.
-//! Mirrors brainrot.py classify_turns + split_aggregate + cmd_split.
+//! split — driver vs bot turn split. Classifies turns by inter-arrival gap.
+//! Default: fits a 2-component log-normal gap model and labels each turn by
+//! posterior probability (learned boundary, no magic 5s). `--det` forces the
+//! deterministic first-turn-or-gap>5s rule. Mirrors brainrot.py split_aggregate.
 
-use crate::brainrot::aggregate::{classify_turns, TurnKind};
+use crate::brainrot::aggregate::{classify_turns, classify_turns_prob_with_model, TurnKind};
 use crate::ledger_read::{compute_coverage, iter_records, load_state_events, parse_range, Record};
 use crate::theme::*;
 use std::collections::HashMap;
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let spec = if args.is_empty() { "today".to_string() } else { args.join(" ") };
+    let use_det = args.iter().any(|a| *a == "--det" || *a == "-d");
+    let spec = if use_det {
+        args.iter()
+            .filter(|a| *a != "--det" && *a != "-d")
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        args.join(" ")
+    };
     let range = parse_range(&spec).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     let records: Vec<Record> = iter_records(Some(range.since), Some(range.until)).collect();
     let cov = compute_coverage(&load_state_events(), range.since, range.until);
@@ -35,7 +45,42 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let kinds = classify_turns(&records);
+    let (kinds, mix) = if use_det {
+        (classify_turns(&records), None)
+    } else {
+        classify_turns_prob_with_model(&records)
+    };
+    if let Some(m) = &mix {
+        bullet(&dim(&format!(
+            "learned gap model: bot-loop ~{} · human turn ~{} · boundary ~{} ({} gaps, {} EM iters, ll {:.1})",
+            fmt_dur(m.mu_bot.exp()),
+            fmt_dur(m.mu_drv.exp()),
+            fmt_dur(m.threshold_sec),
+            m.n_gaps,
+            m.iterations,
+            m.log_lik
+        )));
+    } else if !records.is_empty() && !use_det {
+        bullet(&dim("no stable 2-component gap split — fell back to deterministic 5s rule"));
+    }
+    if !use_det {
+        let (n_lex, n_tr, n_nvt) = records.iter().fold(
+            (0u64, 0u64, 0u64),
+            |(l, t, v), r| {
+                (
+                    l + u64::from(r.lex_div > 0.0),
+                    t + r.tr_ch,
+                    v + u64::from(r.nvt > 0.0),
+                )
+            },
+        );
+        if n_lex > 0 || n_tr > 0 {
+            bullet(&dim(&format!(
+                "wordology axis: {} plain-text turns w/ lexical stats · {} tool_result turns · {} w/ cross-turn novelty → fused into labels",
+                n_lex, n_tr, n_nvt
+            )));
+        }
+    }
 
     let mut drv_n = 0u64;
     let mut drv_tok = 0u64;
