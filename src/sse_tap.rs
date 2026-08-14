@@ -35,8 +35,6 @@ pub struct SseTap<B> {
     bytes_seen: usize,
     label: String,
     meta: FlowMeta,
-    /// OpenAI-only: accumulated `choices[].delta.content` chars, used to
-    /// estimate output tokens when the stream omits a real `usage` block.
     delta_chars: u64,
 }
 
@@ -113,10 +111,6 @@ impl<B> SseTap<B> {
         }
     }
 
-    /// OpenAI-compatible streaming chunk: `{ model, choices:[{ delta:{content}, finish_reason }], usage? }`.
-    /// Accumulate delta content for a token estimate, and prefer a real
-    /// `usage` block when the server sends one (Ollama / vLLM send it in the
-    /// final chunk when the client requests stream_options.include_usage).
     fn parse_openai_event(&mut self, d: &Value) {
         if let Some(model) = d.get("model").and_then(Value::as_str) {
             self.usage.model = Some(model.to_string());

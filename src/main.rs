@@ -36,7 +36,6 @@ struct Cli {
 enum Cmd {
     /// Open the interactive TUI (default when invoked with no args at a tty).
     Tui {
-        /// Read the dev ledger (share_dir/dev) instead of production.
         #[arg(long)]
         dev: bool,
     },
@@ -75,7 +74,6 @@ enum Cmd {
         /// Dump the CA cert PEM to stdout.
         #[arg(long)]
         ca: bool,
-        /// Use the dev config (port 7179, dev ledger) instead of production.
         #[arg(long)]
         dev: bool,
     },
@@ -90,7 +88,6 @@ enum Cmd {
         /// Subcommand and args, e.g. `today`, `score 24h`.
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
-        /// Read the dev ledger (share_dir/dev) instead of production.
         #[arg(long)]
         dev: bool,
     },
@@ -213,9 +210,6 @@ fn run_flytrap(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     rt.block_on(flytrap::run(cfg))
 }
 
-/// Point the ledger/state readers at the dev ledger (share_dir/dev), exactly
-/// what `ccft dev` does. `paths::ledger()` / `paths::state()` honor
-/// $CCFT_LEDGER, so TUI/brainrot launched with `--dev` see dev traffic.
 fn set_dev_ledger_env() {
     std::env::set_var(
         "CCFT_LEDGER",

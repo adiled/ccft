@@ -20,11 +20,6 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::*;
 
-/// Which provider's wire format a request/response uses. `anthropic` is
-/// Claude's `/v1/messages`; `openai` is an OpenAI-compatible
-/// `/v1/chat/completions` (local Ollama / LM Studio / llama.cpp / vLLM, or
-/// any OpenAI-compatible host routed through ccft). The tap branches on this
-/// to pick the right SSE usage parser.
 pub const PROVIDER_ANTHROPIC: &str = "anthropic";
 pub const PROVIDER_OPENAI: &str = "openai";
 
@@ -55,7 +50,6 @@ pub struct FlowMeta {
     pub user_text_chars: u64,
     /// Chars in the LAST user message when it's a tool_result.
     pub tool_result_chars: u64,
-    /// Wire-format provider: PROVIDER_ANTHROPIC or PROVIDER_OPENAI.
     pub provider: &'static str,
 }
 
@@ -78,11 +72,6 @@ impl CcftHandler {
     }
 }
 
-/// Classify a POST by its request path. Matches the two provider wire formats
-/// ccft knows how to mutate + tap. Host-agnostic: this fires for Anthropic
-/// CONNECT traffic and for any OpenAI-compatible request (local plain-HTTP
-/// absolute-form, or CONNECT to an `openai_targets` host). Returns
-/// PROVIDER_ANTHROPIC / PROVIDER_OPENAI / None for non-API POSTs.
 fn classify_post(req: &Request<Body>) -> Option<&'static str> {
     if req.method() != hyper::Method::POST {
         return None;
@@ -302,12 +291,6 @@ fn mutate_messages_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
     Some(Bytes::from(new_body))
 }
 
-/// Mutate an OpenAI-compatible `/v1/chat/completions` request body. OpenAI
-/// has no `system` array — the system prompt is a `role:"system"` message.
-/// Inject `system_override` either by merging into an existing system message
-/// (when its content is a plain string) or by prepending a new system message.
-/// Claude-specific `pain` trimming is NOT applied here — those bloat blocks
-/// are Anthropic's. Returns a new body if mutated, or `None`.
 fn mutate_openai_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
     if cfg.system_override.is_empty() {
         return None;
@@ -346,11 +329,6 @@ fn mutate_openai_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
     Some(Bytes::from(new_body))
 }
 
-/// Hosts whose CONNECT requests we flytrap (intercept + decrypt). Anthropic
-/// is always on; OpenAI-compatible local servers join only via the
-/// configurable `openai_targets` list (host:port), because intercepting a
-/// CONNECT assumes the upstream speaks TLS — most local OpenAI servers are
-/// plain HTTP and are routed via the plain-HTTP proxy path instead.
 const FLYTRAP_HOSTS: &[&str] = &["api.anthropic.com"];
 
 fn should_flytrap_host(cfg: &Config, host: &str, port: u16) -> bool {

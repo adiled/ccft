@@ -1,29 +1,9 @@
-//! trust — surface the CA cert + the env vars every coding agent needs.
-//!
-//! Trusting ccft means pointing an agent's outbound HTTP at ccft (so the
-//! flytrap can tap the stream) *and* making the agent trust ccft's CA (so TLS
-//! interception doesn't trip a certificate error). Rather than special-case
-//! each agent's config file, `ccft trust --apply` writes one env block into
-//! ccft's dot directory (`~/.cc-flytrap/ccft.env`) and sources it from every
-//! shell RC it finds in `$HOME`. Any agent launched from a shell — Claude
-//! Code, pi, opencode, aider, etc. — then inherits the same effective outcome:
-//! `HTTPS_PROXY`/`HTTP_PROXY` → ccft, `NODE_EXTRA_CA_CERTS` → ccft's CA.
-//!
-//! This used to be auto-applied to ~/.claude.json by the bash installer, which
-//! caused real damage when the flytrap went down (claude → connection refused).
-//! Default here is print + you decide. `--apply` flag opts in to mutation with
-//! backups; `--revoke` undoes it.
-
 use crate::config::{paths, Config};
 use crate::flytrap;
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
-/// Shell RC files we source the trust env from. The "always" files (`.zshenv`
-/// for zsh, `.profile` for login shells) cover non-interactive launches; the
-/// interactive ones (`.zshrc`, `.bashrc`, …) cover normal terminals. We touch
-/// every one that exists so trust survives whichever shell the user picks.
 const SHELL_RCS: &[&str] = &[
     ".zshenv",
     ".zprofile",
@@ -93,8 +73,6 @@ pub fn print_instructions_with(dev: bool) {
     println!("  claude -p \"hi\"");
 }
 
-/// Write the trust env block into ccft's dot directory. Plain `export` lines
-/// so it works when sourced by zsh/bash/ksh/sh.
 fn write_env_file(cfg: &Config) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let env = paths::env_file();
     if let Some(dir) = env.parent() {
@@ -115,8 +93,6 @@ fn write_env_file(cfg: &Config) -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(env)
 }
 
-/// The one-line sourcing snippet, guarded by file existence so re-sourcing is
-/// harmless if a RC is read twice.
 fn sourcing_line(env: &PathBuf) -> String {
     format!(
         "# ccft flytrap trust (`ccft trust --apply`); remove with `ccft trust --revoke`\n\

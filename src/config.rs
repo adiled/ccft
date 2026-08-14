@@ -28,16 +28,7 @@ pub struct Config {
     pub pain_enabled: bool,
     pub ledger_enabled: bool,
     pub highway_enabled: bool,
-    /// Handle OpenAI-compatible `/v1/chat/completions` traffic that routes
-    /// through ccft: inject `system_override`, tap the SSE stream for the
-    /// ledger. Applies to any OpenAI-compatible request ccft sees (plain-HTTP
-    /// absolute-form, or CONNECT to an `openai_targets` host).
     pub openai_enabled: bool,
-    /// `host:port` CONNECT targets to decrypt as OpenAI-compatible servers.
-    /// Only meaningful for local servers that actually speak TLS (most local
-    /// OpenAI servers — Ollama, LM Studio, llama.cpp — are plain HTTP and are
-    /// routed via the plain-HTTP proxy path instead; see docs). Empty by
-    /// default: nothing local is ever intercepted.
     pub openai_targets: Vec<String>,
     /// Reverse-DNS-style identifier used for the user-mode service unit:
     /// `<label>.plist` on macOS, `<label>.service` on Linux. Defaults to
@@ -191,9 +182,6 @@ pub mod paths {
         ca_dir().join("ca.key")
     }
 
-    /// The trust env block ccft writes into its dot directory. `ccft trust
-    /// --apply` sources this from the user's shell RCs so every coding agent
-    /// launched from a shell inherits ccft's proxy + CA trust.
     pub fn env_file() -> PathBuf {
         ca_dir().join("ccft.env")
     }
