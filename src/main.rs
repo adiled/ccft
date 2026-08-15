@@ -1,7 +1,7 @@
 //! ccft - an agentic self improvement tool.
 //!
 //! Single-binary streaming flytrap on top of hudsucker. Listens between
-//! Claude Code and api.anthropic.com, mutates the request system prompt
+//! a coding agent and its API endpoint, mutates the request system prompt
 //! per ~/.config/ccft/ccft.json, and writes a per-response token ledger
 //! while preserving the upstream stream byte-for-byte to the client.
 
@@ -35,11 +35,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Open the interactive TUI (default when invoked with no args at a tty).
-    Tui,
+    Tui {
+        #[arg(long)]
+        dev: bool,
+    },
     /// Run the flytrap in the foreground with the production config.
     /// (This is what launchd invokes after `ccft install`.)
     Run,
-    /// Run the flytrap in the foreground with the dev config (port 7179, isolated ledger).
+    /// Set up the parallel dev system: install a separate `com.ccft.dev`
+    /// service unit running the dev config (port 7179) with an isolated dev
+    /// ledger. Independent of the main install. Run it locally in the
+    /// foreground at your own accord with `CCFT_DEV=1 ccft run`.
     Dev,
     /// Install: copy this binary, generate CA, write launchd plist, bootstrap.
     Install {
@@ -60,17 +66,19 @@ enum Cmd {
     Stop,
     /// Bootout + bootstrap.
     Restart,
-    /// Print env vars to route Claude through ccft, or apply/revoke to ~/.claude.json.
+    /// Print env vars to route any coding agent through ccft, or apply/revoke.
     Trust {
-        /// Write HTTPS_PROXY + NODE_EXTRA_CA_CERTS into ~/.claude.json (with backup).
+        /// Write HTTPS_PROXY + NODE_EXTRA_CA_CERTS into ~/.cc-flytrap/ccft.env and source it from every shell RC found in $HOME (with backup).
         #[arg(long)]
         apply: bool,
-        /// Remove flytrap env keys from ~/.claude.json (with backup).
+        /// Remove the sourced flytrap env block from every shell RC found in $HOME (with backup).
         #[arg(long)]
         revoke: bool,
         /// Dump the CA cert PEM to stdout.
         #[arg(long)]
         ca: bool,
+        #[arg(long)]
+        dev: bool,
     },
     /// Tail the launchd output log.
     Logs {
@@ -83,6 +91,8 @@ enum Cmd {
         /// Subcommand and args, e.g. `today`, `score 24h`.
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
+        #[arg(long)]
+        dev: bool,
     },
     /// Perf observability: is ccft slowing requests down?
     Perf {
@@ -90,7 +100,7 @@ enum Cmd {
         #[arg(trailing_var_arg = true)]
         range: Vec<String>,
     },
-    /// Seed the ledger from Claude Code's local session JSONLs at
+    /// Seed the ledger from a coding agent's local session JSONLs at
     /// ~/.claude/projects/. Semantics: **session is the unit of
     /// replacement.** For each affected session (selected via --session
     /// or by date range with --since/--until — applied to the session's
@@ -100,6 +110,9 @@ enum Cmd {
     /// sessions NOT being seeded are preserved untouched. Original
     /// ledger backed up to ledger.jsonl.bak.<unix-ts> before any write.
     Seed {
+        /// Agent whose local session JSONLs to seed from. Only `claude-code` is supported today.
+        #[arg(value_name = "harness", default_value = "claude-code")]
+        harness: String,
         /// Seed only this session id. Mutually exclusive with --since/--until.
         #[arg(long)]
         session: Option<String>,
@@ -125,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   - Run   → stdout (launchd captures it via plist).
     //   - else  → stdout, info level.
     let no_subcommand = cli.command.is_none();
-    let going_to_tui = matches!(cli.command, Some(Cmd::Tui))
+    let going_to_tui = matches!(cli.command, Some(Cmd::Tui { .. }))
         || (no_subcommand && std::io::IsTerminal::is_terminal(&std::io::stdout()));
     if !going_to_tui {
         init_tracing();
@@ -137,27 +150,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // gets updated), fall back to running the flytrap. The plist passes
         // "run" explicitly so launchd never relies on this branch.
         if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-            Cmd::Tui
+            Cmd::Tui { dev: false }
         } else {
             Cmd::Run
         }
     });
 
     match cmd {
-        Cmd::Tui => tui::run(),
+        Cmd::Tui { dev } => {
+            if dev {
+                set_dev_env();
+            }
+            tui::run()
+        }
         Cmd::Run => run_flytrap(Config::load()),
         Cmd::Dev => {
-            let mut cfg = Config::load_dev();
-            // Force isolated port + ledger if dev.json doesn't override them.
-            if cfg.port == Config::default().port {
-                cfg.port = 7179;
-            }
-            // Re-export CCFT_LEDGER for the ledger module to pick up.
-            std::env::set_var(
-                "CCFT_LEDGER",
-                config::paths::share_dir().join("dev").join("ledger.jsonl"),
-            );
-            run_flytrap(cfg)
+            // Parallel dev system: flip CCFT_DEV so every path/config/label
+            // resolves to the dev variants, then install the separate
+            // com.ccft.dev unit (binary, dev.json on 7179, isolated ledger).
+            std::env::set_var("CCFT_DEV", "1");
+            install::install(None)
         }
         Cmd::Install { label } => install::install(label),
         Cmd::Uninstall => install::uninstall(),
@@ -168,23 +180,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Start => lifecycle::start(&Config::load()),
         Cmd::Stop => lifecycle::stop(&Config::load()),
         Cmd::Restart => lifecycle::restart(&Config::load()),
-        Cmd::Trust { apply, revoke, ca } => {
+        Cmd::Trust { apply, revoke, ca, dev } => {
             if ca {
                 trust::print_ca()
             } else if apply {
-                trust::apply()
+                trust::apply_with(dev)
             } else if revoke {
-                trust::revoke()
+                trust::revoke_with(dev)
             } else {
-                trust::print_instructions();
+                trust::print_instructions_with(dev);
                 Ok(())
             }
         }
         Cmd::Logs { n } => tail_logs(n),
-        Cmd::Brainrot { args } => brainrot::run(&args),
+        Cmd::Brainrot { args, dev } => {
+            if dev {
+                set_dev_env();
+            }
+            brainrot::run(&args)
+        }
         Cmd::Perf { range } => perf::run(&range.join(" ")),
-        Cmd::Seed { session, since, until, dry_run } => {
-            seed::run(seed::Args { session, since, until, dry_run })
+        Cmd::Seed { harness, session, since, until, dry_run } => {
+            seed::run(seed::Args { harness, session, since, until, dry_run })
         }
     }
 }
@@ -194,6 +211,12 @@ fn run_flytrap(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     rt.block_on(flytrap::run(cfg))
+}
+
+fn set_dev_env() {
+    // Flip the whole binary into parallel dev mode: dev config (dev.json),
+    // dev ledger, dev log, and the com.ccft.dev service unit.
+    std::env::set_var("CCFT_DEV", "1");
 }
 
 fn init_tracing() {

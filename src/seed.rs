@@ -1,5 +1,7 @@
-//! `ccft seed` — replace ledger contents for selected sessions using
-//! Claude Code's local session JSONLs at `~/.claude/projects/`.
+//! `ccft seed` — replace ledger contents for selected sessions using a
+//! coding agent's local session JSONLs. The `<harness>` selects which agent
+//! to read; only `claude-code` (from `~/.claude/projects/`) is supported
+//! today.
 //!
 //! Semantics: **session is the unit of replacement.** For each session the
 //! user selects (via `--session` or by date range with `--since/--until`):
@@ -24,6 +26,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 pub struct Args {
+    pub harness: String,
     pub session: Option<String>,
     pub since: Option<String>,
     pub until: Option<String>,
@@ -46,6 +49,16 @@ struct Turn {
     cc: u64,
 }
 
+fn harness_projects_dir(harness: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .map_err(|_| -> Box<dyn std::error::Error> { "no HOME env var".into() })?;
+    match harness {
+        "claude-code" => Ok(home.join(".claude/projects")),
+        other => Err(format!("unsupported harness `{other}` (supported: claude-code)").into()),
+    }
+}
+
 pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if args.session.is_some() && (args.since.is_some() || args.until.is_some()) {
         return Err("--session is mutually exclusive with --since/--until".into());
@@ -54,12 +67,9 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         return Err("provide --session SID or --since/--until DATE".into());
     }
 
-    let projects_dir = std::env::var("HOME")
-        .map(PathBuf::from)
-        .map_err(|_| -> Box<dyn std::error::Error> { "no HOME env var".into() })?
-        .join(".claude/projects");
+    let projects_dir = harness_projects_dir(&args.harness)?;
     if !projects_dir.exists() {
-        return Err(format!("no claude projects dir at {}", projects_dir.display()).into());
+        return Err(format!("no {} projects dir at {}", args.harness, projects_dir.display()).into());
     }
 
     let since = args.since.as_deref().map(parse_when).transpose()?;
@@ -121,7 +131,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // SAFETY: never drop a session that has no replacement turns. A session
     // can have ledger rows but an empty/title-only JSONL (e.g. cancelled
-    // sessions, sessions captured by ccft from non-Claude-Code clients).
+    // sessions, sessions captured by ccft from non-`claude-code` clients).
     // Without this guard, --since covering such a session destroys real
     // data with nothing to replace it. Restrict the drop set to sessions
     // we actually have replacement data for.
@@ -230,7 +240,7 @@ fn ts_of_raw(raw: &str) -> Option<f64> {
 
 /// Walk every JSONL under `dir`, pair each user event with the next
 /// assistant event (in chronological order — events are NOT always
-/// written in ts order in the JSONL, e.g. when Claude Code logs the
+/// written in ts order in the JSONL, e.g. when the agent logs the
 /// assistant response slightly before the corresponding user message
 /// hits disk). Emits one Turn per pair, plus trailing lone user events
 /// with te=None which the caller filters out.
@@ -433,7 +443,6 @@ fn synthesize_record_json(t: &Turn) -> String {
         "cip": null,
         "pip": null,
         "sip": null,
-        "ep": "https://api.anthropic.com/v1/messages",
         "reg": null,
         "model": t.model.as_deref().unwrap_or("unknown"),
         "in": t.in_tok,

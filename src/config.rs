@@ -28,6 +28,8 @@ pub struct Config {
     pub pain_enabled: bool,
     pub ledger_enabled: bool,
     pub highway_enabled: bool,
+    pub openai_enabled: bool,
+    pub openai_targets: Vec<String>,
     /// Reverse-DNS-style identifier used for the user-mode service unit:
     /// `<label>.plist` on macOS, `<label>.service` on Linux. Defaults to
     /// `com.ccft`. Override per-install via `ccft install --label …` or
@@ -44,7 +46,15 @@ impl Default for Config {
             pain_enabled: false,
             ledger_enabled: true,
             highway_enabled: true,
-            service_label: DEFAULT_SERVICE_LABEL.into(),
+            openai_enabled: true,
+            openai_targets: Vec::new(),
+            // In dev mode the default service unit is com.ccft.dev so the
+            // parallel dev system never collides with production.
+            service_label: if paths::is_dev() {
+                "com.ccft.dev".into()
+            } else {
+                DEFAULT_SERVICE_LABEL.into()
+            },
         }
     }
 }
@@ -101,6 +111,20 @@ impl Config {
         if let Some(b) = parsed.get("highway").and_then(Value::as_bool) {
             cfg.highway_enabled = b;
         }
+        if let Some(b) = parsed.get("openai").and_then(Value::as_bool) {
+            cfg.openai_enabled = b;
+        }
+        if let Some(arr) = parsed.get("openai_targets").and_then(Value::as_array) {
+            let mut targets = Vec::new();
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    if !s.trim().is_empty() {
+                        targets.push(s.trim().to_string());
+                    }
+                }
+            }
+            cfg.openai_targets = targets;
+        }
         if let Some(s) = parsed.get("service_label").and_then(Value::as_str) {
             if !s.trim().is_empty() {
                 cfg.service_label = s.trim().to_string();
@@ -108,7 +132,7 @@ impl Config {
         }
 
         info!(
-            "[ccft] config loaded ({}): host={} port={} pain={} ledger={} highway={} label={} override={}chars",
+            "[ccft] config loaded ({}): host={} port={} pain={} ledger={} highway={} label={} override={}chars openai={} targets={}",
             path.display(),
             cfg.host,
             cfg.port,
@@ -117,6 +141,8 @@ impl Config {
             cfg.highway_enabled,
             cfg.service_label,
             cfg.system_override.len(),
+            cfg.openai_enabled,
+            cfg.openai_targets.join(","),
         );
         cfg
     }
@@ -130,6 +156,12 @@ impl Config {
 /// `CCFT_PREFIX=/tmp/ccft-smoke ccft install` will install entirely into
 /// `/tmp/ccft-smoke/...` and skip launchctl operations (see `is_isolated()`).
 /// Production state is untouched.
+///
+/// **Dev mode:** when `CCFT_DEV=1` is set, the whole binary operates as a
+/// parallel dev system — dev config, dev ledger, dev log, and a separate
+/// `com.ccft.dev` service unit. Production state is untouched. This is what
+/// `ccft dev` sets so the same binary/commands run independently of the main
+/// install.
 pub mod paths {
     use std::path::PathBuf;
 
@@ -152,6 +184,11 @@ pub mod paths {
         std::env::var_os("CCFT_PREFIX").is_some()
     }
 
+    /// True when CCFT_DEV is set — operate on the parallel dev system.
+    pub fn is_dev() -> bool {
+        std::env::var_os("CCFT_DEV").is_some()
+    }
+
     pub fn ca_dir() -> PathBuf {
         root().join(".cc-flytrap")
     }
@@ -162,6 +199,10 @@ pub mod paths {
         ca_dir().join("ca.key")
     }
 
+    pub fn env_file() -> PathBuf {
+        ca_dir().join("ccft.env")
+    }
+
     pub fn config_dir() -> PathBuf {
         root().join(".config").join("ccft")
     }
@@ -169,7 +210,11 @@ pub mod paths {
         if let Some(p) = std::env::var_os("CCFT_CONFIG") {
             return PathBuf::from(p);
         }
-        config_dir().join("ccft.json")
+        if is_dev() {
+            config_dir().join("dev.json")
+        } else {
+            config_dir().join("ccft.json")
+        }
     }
     pub fn dev_config() -> PathBuf {
         if let Some(p) = std::env::var_os("CCFT_CONFIG") {
@@ -185,7 +230,11 @@ pub mod paths {
         if let Some(p) = std::env::var_os("CCFT_LEDGER") {
             return PathBuf::from(p);
         }
-        share_dir().join("ledger.jsonl")
+        if is_dev() {
+            share_dir().join("dev").join("ledger.jsonl")
+        } else {
+            share_dir().join("ledger.jsonl")
+        }
     }
     pub fn state() -> PathBuf {
         let mut p = ledger();
@@ -193,7 +242,11 @@ pub mod paths {
         p
     }
     pub fn log_dir() -> PathBuf {
-        share_dir().join("logs")
+        if is_dev() {
+            share_dir().join("dev").join("logs")
+        } else {
+            share_dir().join("logs")
+        }
     }
     pub fn launchd_log() -> PathBuf {
         log_dir().join("launchd.log")

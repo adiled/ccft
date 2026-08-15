@@ -1,7 +1,8 @@
-//! Handler logic: matches Anthropic /v1/messages, mutates request body to
-//! inject system_override + trim Claude Code's bloat blocks, and taps the
-//! response stream for SSE token aggregation. Forwards every byte to the
-//! client untouched — streaming UX preserved.
+//! Handler logic: matches model-provider wire formats (Anthropic
+//! /v1/messages, OpenAI-compatible /v1/chat/completions), mutates request
+//! body to inject system_override + trim Claude Code's bloat blocks, and
+//! taps the response stream for SSE token aggregation. Forwards every byte
+//! to the client untouched — streaming UX preserved.
 
 use crate::config::Config;
 use crate::ledger;
@@ -19,6 +20,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::*;
+
+pub const PROVIDER_ANTHROPIC: &str = "anthropic";
+pub const PROVIDER_OPENAI: &str = "openai";
 
 /// Static cc-flytrap.py trim text. Hardcoded because these strings ARE the
 /// project's value-add for `pain=false`; not user config.
@@ -41,13 +45,13 @@ pub struct FlowMeta {
     pub session_id: Option<String>,
     pub started_wall: f64,
     pub ccft_us_req: u64,
-    pub endpoint: String,
     pub server_ip: Option<String>,
     /// Chars in the LAST user message of the request when it's plain text
     /// (fresh human input). 0 when the last user message is a tool_result.
     pub user_text_chars: u64,
     /// Chars in the LAST user message when it's a tool_result.
     pub tool_result_chars: u64,
+    pub provider: &'static str,
 }
 
 type FlowKey = (String, String);
@@ -69,12 +73,18 @@ impl CcftHandler {
     }
 }
 
-fn is_messages_post(req: &Request<Body>) -> bool {
+fn classify_post(req: &Request<Body>) -> Option<&'static str> {
     if req.method() != hyper::Method::POST {
-        return false;
+        return None;
     }
-    let uri = req.uri().to_string();
-    uri.contains("api.anthropic.com") && uri.contains("/v1/messages")
+    let path = req.uri().path();
+    if path.ends_with("/v1/messages") {
+        return Some(PROVIDER_ANTHROPIC);
+    }
+    if path.ends_with("/v1/chat/completions") {
+        return Some(PROVIDER_OPENAI);
+    }
+    None
 }
 
 fn flow_key(client: &str, uri: &hyper::Uri) -> FlowKey {
@@ -234,8 +244,20 @@ fn strip_system_blocks(s: &str) -> String {
 
 /// Mutate Anthropic request body. Returns a new body if mutated, or `None`.
 fn mutate_messages_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
-    let mut data: Value = serde_json::from_slice(body_bytes).ok()?;
-    let system = data.get_mut("system")?.as_array_mut()?;
+    let mut data: Value = match serde_json::from_slice(body_bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("[ccft] anthropic body not parseable ({}), passing through", e);
+            return None;
+        }
+    };
+    let system = match data.get_mut("system").and_then(|s| s.as_array_mut()) {
+        Some(s) => s,
+        None => {
+            warn!("[ccft] anthropic body has no `system` array, passing through");
+            return None;
+        }
+    };
 
     let mut notes: Vec<&str> = Vec::new();
     let mut mutated = false;
@@ -272,7 +294,16 @@ fn mutate_messages_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
         return None;
     }
 
-    let new_body = serde_json::to_vec(&data).ok()?;
+    let new_body = match serde_json::to_vec(&data) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(
+                "[ccft] failed to re-serialize mutated anthropic body ({}), passing through original",
+                e
+            );
+            return None;
+        }
+    };
     info!(
         "[ccft] modified: {} (body {} -> {} bytes)",
         notes.join(","),
@@ -282,15 +313,73 @@ fn mutate_messages_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
     Some(Bytes::from(new_body))
 }
 
-/// Hosts whose CONNECT requests we flytrap (intercept + decrypt). Today
-/// we only have mutation/ledger logic for Anthropic's /v1/messages, so
-/// flytrapping anything else gains nothing while costing TLS failures
-/// for subprocesses that don't trust ccft's CA. Add hosts here as we add
-/// per-provider handler support.
+fn mutate_openai_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
+    if cfg.system_override.is_empty() {
+        return None;
+    }
+    let mut data: Value = match serde_json::from_slice(body_bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("[ccft] openai body not parseable ({}), passing through", e);
+            return None;
+        }
+    };
+    let messages = match data.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        Some(m) => m,
+        None => {
+            warn!("[ccft] openai body has no `messages` array, passing through");
+            return None;
+        }
+    };
+
+    let mut injected = false;
+    for m in messages.iter_mut() {
+        if m.get("role").and_then(Value::as_str) == Some("system") {
+            if let Some(content) = m.get("content").and_then(Value::as_str) {
+                let combined = if content.is_empty() {
+                    cfg.system_override.clone()
+                } else {
+                    format!("{}\n\n{}", content, cfg.system_override)
+                };
+                m["content"] = Value::String(combined);
+                injected = true;
+            }
+            break;
+        }
+    }
+    if !injected {
+        messages.insert(
+            0,
+            serde_json::json!({ "role": "system", "content": cfg.system_override }),
+        );
+    }
+
+    let new_body = match serde_json::to_vec(&data) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(
+                "[ccft] failed to re-serialize mutated openai body ({}), passing through original",
+                e
+            );
+            return None;
+        }
+    };
+    info!(
+        "[ccft] openai modified: +system ({} -> {} bytes)",
+        body_bytes.len(),
+        new_body.len()
+    );
+    Some(Bytes::from(new_body))
+}
+
 const FLYTRAP_HOSTS: &[&str] = &["api.anthropic.com"];
 
-fn should_flytrap_host(host: &str) -> bool {
-    FLYTRAP_HOSTS.contains(&host)
+fn should_flytrap_host(cfg: &Config, host: &str, port: u16) -> bool {
+    if FLYTRAP_HOSTS.contains(&host) {
+        return true;
+    }
+    let authority = format!("{}:{}", host, port);
+    cfg.openai_targets.iter().any(|t| t == &authority)
 }
 
 impl HttpHandler for CcftHandler {
@@ -299,7 +388,9 @@ impl HttpHandler for CcftHandler {
         _ctx: &HttpContext,
         req: &Request<Body>,
     ) -> bool {
-        should_flytrap_host(req.uri().host().unwrap_or(""))
+        let host = req.uri().host().unwrap_or("");
+        let port = req.uri().port_u16().unwrap_or(443);
+        should_flytrap_host(&self.cfg, host, port)
     }
 
     async fn handle_request(
@@ -307,9 +398,9 @@ impl HttpHandler for CcftHandler {
         ctx: &HttpContext,
         req: Request<Body>,
     ) -> RequestOrResponse {
-        if !is_messages_post(&req) {
+        let Some(provider) = classify_post(&req) else {
             return req.into();
-        }
+        };
 
         let t0 = Instant::now();
         let req = match decode_request(req) {
@@ -337,25 +428,28 @@ impl HttpHandler for CcftHandler {
         };
 
         let session_id = session::extract(&parts.headers, Some(&collected));
-        let (user_text_chars, tool_result_chars) = extract_user_message_chars(&collected);
+        let (user_text_chars, tool_result_chars) = if provider == PROVIDER_ANTHROPIC {
+            extract_user_message_chars(&collected)
+        } else {
+            (0, 0)
+        };
 
-        let new_body = mutate_messages_body(&collected, &self.cfg).unwrap_or(collected);
+        let new_body = match provider {
+            PROVIDER_ANTHROPIC => mutate_messages_body(&collected, &self.cfg).unwrap_or(collected),
+            PROVIDER_OPENAI => mutate_openai_body(&collected, &self.cfg).unwrap_or(collected),
+            _ => collected,
+        };
 
         let _ = self.seq.fetch_add(1, Ordering::Relaxed);
-        let endpoint = format!(
-            "https://{}{}",
-            parts.uri.host().unwrap_or("api.anthropic.com"),
-            parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/")
-        );
         let key = flow_key(&ctx.client_addr.to_string(), &parts.uri);
         let meta = FlowMeta {
             session_id,
             started_wall: now_wall_secs(),
             ccft_us_req: t0.elapsed().as_micros() as u64,
-            endpoint,
             server_ip: None,
             user_text_chars,
             tool_result_chars,
+            provider,
         };
         self.pending.entry(key).or_default().push(meta);
 
