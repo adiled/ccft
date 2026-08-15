@@ -42,7 +42,10 @@ enum Cmd {
     /// Run the flytrap in the foreground with the production config.
     /// (This is what launchd invokes after `ccft install`.)
     Run,
-    /// Run the flytrap in the foreground with the dev config (port 7179, isolated ledger).
+    /// Set up the parallel dev system: install a separate `com.ccft.dev`
+    /// service unit running the dev config (port 7179) with an isolated dev
+    /// ledger. Independent of the main install. Run it locally in the
+    /// foreground at your own accord with `CCFT_DEV=1 ccft run`.
     Dev,
     /// Install: copy this binary, generate CA, write launchd plist, bootstrap.
     Install {
@@ -156,20 +159,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         Cmd::Tui { dev } => {
             if dev {
-                set_dev_ledger_env();
+                set_dev_env();
             }
             tui::run()
         }
         Cmd::Run => run_flytrap(Config::load()),
         Cmd::Dev => {
-            let mut cfg = Config::load_dev();
-            // Force isolated port + ledger if dev.json doesn't override them.
-            if cfg.port == Config::default().port {
-                cfg.port = 7179;
-            }
-            // Re-export CCFT_LEDGER for the ledger module to pick up.
-            set_dev_ledger_env();
-            run_flytrap(cfg)
+            // Parallel dev system: flip CCFT_DEV so every path/config/label
+            // resolves to the dev variants, then install the separate
+            // com.ccft.dev unit (binary, dev.json on 7179, isolated ledger).
+            std::env::set_var("CCFT_DEV", "1");
+            install::install(None)
         }
         Cmd::Install { label } => install::install(label),
         Cmd::Uninstall => install::uninstall(),
@@ -195,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Logs { n } => tail_logs(n),
         Cmd::Brainrot { args, dev } => {
             if dev {
-                set_dev_ledger_env();
+                set_dev_env();
             }
             brainrot::run(&args)
         }
@@ -213,11 +213,10 @@ fn run_flytrap(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     rt.block_on(flytrap::run(cfg))
 }
 
-fn set_dev_ledger_env() {
-    std::env::set_var(
-        "CCFT_LEDGER",
-        config::paths::share_dir().join("dev").join("ledger.jsonl"),
-    );
+fn set_dev_env() {
+    // Flip the whole binary into parallel dev mode: dev config (dev.json),
+    // dev ledger, dev log, and the com.ccft.dev service unit.
+    std::env::set_var("CCFT_DEV", "1");
 }
 
 fn init_tracing() {

@@ -69,14 +69,18 @@ make dev                     # builds, then runs `ccft dev` in foreground
 cargo run --release -- dev
 ```
 
-`ccft dev` runs the same flytrap in foreground with isolated state:
+`ccft dev` sets up a **parallel dev system**: a separate `com.ccft.dev`
+service unit running the dev config on 7179 with an isolated dev ledger. It
+never touches the main install. The dev invoker (harness) can then run the
+proxy locally at its own accord with `CCFT_DEV=1 ccft run` to verify things.
 
-| | Production (`ccft run`) | Dev (`ccft dev`) |
+| | Production (`ccft run`) | Dev (`ccft dev` / `CCFT_DEV=1`) |
 |---|---|---|
 | Port | 7178 | 7179 |
 | Config | `~/.config/ccft/ccft.json` | `~/.config/ccft/dev.json` |
 | Ledger | `~/.local/share/ccft/ledger.jsonl` | `~/.local/share/ccft/dev/ledger.jsonl` |
-| Process | launchd-managed | foreground, dies with the shell |
+| Service unit | `com.ccft` | `com.ccft.dev` |
+| Process | launchd-managed | launchd-managed; run `CCFT_DEV=1 ccft run` for foreground |
 | CA | shared `~/.cc-flytrap/ca.pem` | shared `~/.cc-flytrap/ca.pem` |
 
 To use dev: `HTTPS_PROXY=http://127.0.0.1:7179 NODE_EXTRA_CA_CERTS=$HOME/.cc-flytrap/ca.pem your-agent -p "..."`. The CA is shared so trust setup carries over.

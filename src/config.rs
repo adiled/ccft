@@ -48,7 +48,13 @@ impl Default for Config {
             highway_enabled: true,
             openai_enabled: true,
             openai_targets: Vec::new(),
-            service_label: DEFAULT_SERVICE_LABEL.into(),
+            // In dev mode the default service unit is com.ccft.dev so the
+            // parallel dev system never collides with production.
+            service_label: if paths::is_dev() {
+                "com.ccft.dev".into()
+            } else {
+                DEFAULT_SERVICE_LABEL.into()
+            },
         }
     }
 }
@@ -150,6 +156,12 @@ impl Config {
 /// `CCFT_PREFIX=/tmp/ccft-smoke ccft install` will install entirely into
 /// `/tmp/ccft-smoke/...` and skip launchctl operations (see `is_isolated()`).
 /// Production state is untouched.
+///
+/// **Dev mode:** when `CCFT_DEV=1` is set, the whole binary operates as a
+/// parallel dev system — dev config, dev ledger, dev log, and a separate
+/// `com.ccft.dev` service unit. Production state is untouched. This is what
+/// `ccft dev` sets so the same binary/commands run independently of the main
+/// install.
 pub mod paths {
     use std::path::PathBuf;
 
@@ -170,6 +182,11 @@ pub mod paths {
     /// True when CCFT_PREFIX is set — caller should skip launchctl mutations.
     pub fn is_isolated() -> bool {
         std::env::var_os("CCFT_PREFIX").is_some()
+    }
+
+    /// True when CCFT_DEV is set — operate on the parallel dev system.
+    pub fn is_dev() -> bool {
+        std::env::var_os("CCFT_DEV").is_some()
     }
 
     pub fn ca_dir() -> PathBuf {
@@ -193,7 +210,11 @@ pub mod paths {
         if let Some(p) = std::env::var_os("CCFT_CONFIG") {
             return PathBuf::from(p);
         }
-        config_dir().join("ccft.json")
+        if is_dev() {
+            config_dir().join("dev.json")
+        } else {
+            config_dir().join("ccft.json")
+        }
     }
     pub fn dev_config() -> PathBuf {
         if let Some(p) = std::env::var_os("CCFT_CONFIG") {
@@ -209,7 +230,11 @@ pub mod paths {
         if let Some(p) = std::env::var_os("CCFT_LEDGER") {
             return PathBuf::from(p);
         }
-        share_dir().join("ledger.jsonl")
+        if is_dev() {
+            share_dir().join("dev").join("ledger.jsonl")
+        } else {
+            share_dir().join("ledger.jsonl")
+        }
     }
     pub fn state() -> PathBuf {
         let mut p = ledger();
@@ -217,7 +242,11 @@ pub mod paths {
         p
     }
     pub fn log_dir() -> PathBuf {
-        share_dir().join("logs")
+        if is_dev() {
+            share_dir().join("dev").join("logs")
+        } else {
+            share_dir().join("logs")
+        }
     }
     pub fn launchd_log() -> PathBuf {
         log_dir().join("launchd.log")

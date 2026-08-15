@@ -112,6 +112,9 @@ pub struct App {
 
 impl App {
     fn new() -> Self {
+        // --dev TUI flips CCFT_DEV (set in main.rs), so Config::load()
+        // already resolves to dev.json (port 7179) and the ledger reads land
+        // on the dev ledger. Non-dev loads the production config.
         let cfg = Config::load();
         let preset = RangePreset::Today;
         let range = parse_range(preset.spec()).unwrap_or(Range {

@@ -64,7 +64,7 @@ The TUI brainrot panel reads this file as-is.
 | Command | What |
 |---|---|
 | `ccft run` | Run flytrap in foreground using production config (what launchd invokes) |
-| `ccft dev` | Run flytrap in foreground using dev config (port 7179, isolated ledger) |
+| `ccft dev` | Set up the parallel dev system: install a separate `com.ccft.dev` service unit (dev.json on port 7179, isolated dev ledger). Run it locally at your own accord with `CCFT_DEV=1 ccft run` |
 | `ccft install` | Copy binary, generate CA, write plist, bootstrap launchd |
 | `ccft uninstall` | Bootout, remove plist + binary, keep CA/config/ledger |
 | `ccft status` | Print install + load + bind state |

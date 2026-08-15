@@ -43,7 +43,7 @@ ccft trust --apply
 
 **Ledger** — every request gets a JSONL line at `~/.local/share/ccft/ledger.jsonl` with input/output tokens, cache hits, latency, model, session id, and ccft's own processing time. Schema in [`docs/reference.md`](docs/reference.md#ledger-schema).
 
-**Dev mode** — `ccft dev` runs in foreground on port 7179 with an isolated config + ledger. No need to bootout the production daemon. Details in [`docs/install.md#dev-mode`](docs/install.md#dev-mode).
+**Dev mode** — `ccft dev` sets up a parallel dev system: a separate `com.ccft.dev` service unit on port 7179 with an isolated config + ledger, independent of the main install. Run it locally at your own accord with `CCFT_DEV=1 ccft run`. Details in [`docs/install.md#dev-mode`](docs/install.md#dev-mode).
 
 **Config** — three knobs in `~/.config/ccft/ccft.json`: `system_override` (extra system prompt), `pain` (false trims Claude Code's bloat blocks), `ledger` (write JSONL). See [`docs/reference.md#config`](docs/reference.md#config).
 

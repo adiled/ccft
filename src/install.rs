@@ -88,9 +88,12 @@ pub fn install(label: Option<String>) -> Result<(), Box<dyn std::error::Error>> 
     // 2. Default config if none. Includes service_label so subsequent
     //    operations find the same service unit.
     if !cfg_path.exists() {
+        // Dev mode installs into dev.json with the dev port so the parallel
+        // system runs independently on 7179.
+        let port = if paths::is_dev() { 7179 } else { 7178 };
         let default_cfg = serde_json::json!({
             "host":            "127.0.0.1",
-            "port":            7178,
+            "port":            port,
             "system_override": "",
             "pain":            false,
             "ledger":          true,
@@ -156,8 +159,9 @@ fn persist_service_label(
             serde_json::Value::String(label.to_string()),
         );
         // Backfill defaults if the file is brand new.
+        let port = if paths::is_dev() { 7179 } else { 7178 };
         obj.entry("host").or_insert(serde_json::json!("127.0.0.1"));
-        obj.entry("port").or_insert(serde_json::json!(7178u64));
+        obj.entry("port").or_insert(serde_json::json!(port));
         obj.entry("system_override").or_insert(serde_json::json!(""));
         obj.entry("pain").or_insert(serde_json::json!(false));
         obj.entry("ledger").or_insert(serde_json::json!(true));
