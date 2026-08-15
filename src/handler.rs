@@ -243,8 +243,20 @@ fn strip_system_blocks(s: &str) -> String {
 
 /// Mutate Anthropic request body. Returns a new body if mutated, or `None`.
 fn mutate_messages_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
-    let mut data: Value = serde_json::from_slice(body_bytes).ok()?;
-    let system = data.get_mut("system")?.as_array_mut()?;
+    let mut data: Value = match serde_json::from_slice(body_bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("[ccft] anthropic body not parseable ({}), passing through", e);
+            return None;
+        }
+    };
+    let system = match data.get_mut("system").and_then(|s| s.as_array_mut()) {
+        Some(s) => s,
+        None => {
+            warn!("[ccft] anthropic body has no `system` array, passing through");
+            return None;
+        }
+    };
 
     let mut notes: Vec<&str> = Vec::new();
     let mut mutated = false;
@@ -281,7 +293,16 @@ fn mutate_messages_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
         return None;
     }
 
-    let new_body = serde_json::to_vec(&data).ok()?;
+    let new_body = match serde_json::to_vec(&data) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(
+                "[ccft] failed to re-serialize mutated anthropic body ({}), passing through original",
+                e
+            );
+            return None;
+        }
+    };
     info!(
         "[ccft] modified: {} (body {} -> {} bytes)",
         notes.join(","),
@@ -295,8 +316,20 @@ fn mutate_openai_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
     if cfg.system_override.is_empty() {
         return None;
     }
-    let mut data: Value = serde_json::from_slice(body_bytes).ok()?;
-    let messages = data.get_mut("messages")?.as_array_mut()?;
+    let mut data: Value = match serde_json::from_slice(body_bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("[ccft] openai body not parseable ({}), passing through", e);
+            return None;
+        }
+    };
+    let messages = match data.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        Some(m) => m,
+        None => {
+            warn!("[ccft] openai body has no `messages` array, passing through");
+            return None;
+        }
+    };
 
     let mut injected = false;
     for m in messages.iter_mut() {
@@ -320,7 +353,16 @@ fn mutate_openai_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
         );
     }
 
-    let new_body = serde_json::to_vec(&data).ok()?;
+    let new_body = match serde_json::to_vec(&data) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(
+                "[ccft] failed to re-serialize mutated openai body ({}), passing through original",
+                e
+            );
+            return None;
+        }
+    };
     info!(
         "[ccft] openai modified: +system ({} -> {} bytes)",
         body_bytes.len(),

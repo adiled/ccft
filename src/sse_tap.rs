@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::handler::FlowMeta;
 
@@ -73,8 +73,20 @@ impl<B> SseTap<B> {
     }
 
     fn parse_event(&mut self, json_str: &str) {
-        let Ok(d): Result<Value, _> = serde_json::from_str(json_str) else {
-            return;
+        let d: Value = match serde_json::from_str(json_str) {
+            Ok(d) => d,
+            Err(e) => {
+                // `data: [DONE]` is the OpenAI stream terminator — expected,
+                // not a content mismatch.
+                if json_str.trim() == "[DONE]" {
+                    return;
+                }
+                warn!(
+                    "[ccft] unparseable {} data line ({}), ignoring: {}",
+                    self.meta.provider, e, json_str
+                );
+                return;
+            }
         };
 
         if self.meta.provider == crate::handler::PROVIDER_OPENAI {
