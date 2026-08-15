@@ -67,10 +67,11 @@ pub fn print_instructions_with(dev: bool) {
     println!("stream for the ledger. Remote HTTPS providers ride the CONNECT tunnel and");
     println!("use NODE_EXTRA_CA_CERTS above.");
     println!();
-    println!("Verify Claude:");
+    println!("Verify by sending a one-shot prompt with your harness and checking the ledger:");
     println!("  HTTPS_PROXY=http://{host}:{port} \\", host = cfg.host, port = cfg.port);
     println!("  NODE_EXTRA_CA_CERTS={} \\", ca.display());
-    println!("  claude -p \"hi\"");
+    println!("  your-agent -p \"hi\"");
+    println!("  # then check the ledger: ccft brainrot today");
 }
 
 fn write_env_file(cfg: &Config) -> Result<PathBuf, Box<dyn std::error::Error>> {

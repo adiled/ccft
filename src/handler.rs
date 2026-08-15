@@ -1,7 +1,8 @@
-//! Handler logic: matches Anthropic /v1/messages, mutates request body to
-//! inject system_override + trim Claude Code's bloat blocks, and taps the
-//! response stream for SSE token aggregation. Forwards every byte to the
-//! client untouched — streaming UX preserved.
+//! Handler logic: matches model-provider wire formats (Anthropic
+//! /v1/messages, OpenAI-compatible /v1/chat/completions), mutates request
+//! body to inject system_override + trim Claude Code's bloat blocks, and
+//! taps the response stream for SSE token aggregation. Forwards every byte
+//! to the client untouched — streaming UX preserved.
 
 use crate::config::Config;
 use crate::ledger;

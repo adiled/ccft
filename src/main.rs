@@ -1,7 +1,7 @@
 //! ccft - an agentic self improvement tool.
 //!
 //! Single-binary streaming flytrap on top of hudsucker. Listens between
-//! Claude Code and api.anthropic.com, mutates the request system prompt
+//! a coding agent and its API endpoint, mutates the request system prompt
 //! per ~/.config/ccft/ccft.json, and writes a per-response token ledger
 //! while preserving the upstream stream byte-for-byte to the client.
 
@@ -63,7 +63,7 @@ enum Cmd {
     Stop,
     /// Bootout + bootstrap.
     Restart,
-    /// Print env vars to route Claude through ccft, or apply/revoke to ~/.claude.json.
+    /// Print env vars to route any coding agent through ccft, or apply/revoke.
     Trust {
         /// Write HTTPS_PROXY + NODE_EXTRA_CA_CERTS into ~/.claude.json (with backup).
         #[arg(long)]
@@ -97,7 +97,7 @@ enum Cmd {
         #[arg(trailing_var_arg = true)]
         range: Vec<String>,
     },
-    /// Seed the ledger from Claude Code's local session JSONLs at
+    /// Seed the ledger from a coding agent's local session JSONLs at
     /// ~/.claude/projects/. Semantics: **session is the unit of
     /// replacement.** For each affected session (selected via --session
     /// or by date range with --since/--until — applied to the session's
@@ -107,6 +107,9 @@ enum Cmd {
     /// sessions NOT being seeded are preserved untouched. Original
     /// ledger backed up to ledger.jsonl.bak.<unix-ts> before any write.
     Seed {
+        /// Agent whose local session JSONLs to seed from. Only `claude-code` is supported today.
+        #[arg(value_name = "harness", default_value = "claude-code")]
+        harness: String,
         /// Seed only this session id. Mutually exclusive with --since/--until.
         #[arg(long)]
         session: Option<String>,
@@ -197,8 +200,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             brainrot::run(&args)
         }
         Cmd::Perf { range } => perf::run(&range.join(" ")),
-        Cmd::Seed { session, since, until, dry_run } => {
-            seed::run(seed::Args { session, since, until, dry_run })
+        Cmd::Seed { harness, session, since, until, dry_run } => {
+            seed::run(seed::Args { harness, session, since, until, dry_run })
         }
     }
 }

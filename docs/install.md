@@ -14,7 +14,7 @@ For source build: `rustc` ≥ 1.95 (`brew install rust` on mac, distro package o
 
 ```bash
 make install         # build + ccft install
-ccft trust --apply   # write env into ~/.claude.json (with backup)
+ccft trust --apply   # write env into ~/.cc-flytrap/ccft.env + source from shell RCs
 ```
 
 `ccft install` does five things, idempotently:
@@ -27,10 +27,10 @@ ccft trust --apply   # write env into ~/.claude.json (with backup)
    - Linux: `~/.config/systemd/user/com.ccft.service` (Restart=always)
 5. Registers it with the platform's user-mode service manager (`launchctl bootstrap` / `systemctl --user enable --now`).
 
-After install, the flytrap is running on `127.0.0.1:7178`. To route Claude through it:
+After install, the flytrap is running on `127.0.0.1:7178`. To route an agent through it:
 
 ```bash
-ccft trust --apply   # writes HTTPS_PROXY + NODE_EXTRA_CA_CERTS into ~/.claude.json (with backup)
+ccft trust --apply   # writes HTTPS_PROXY + NODE_EXTRA_CA_CERTS into ~/.cc-flytrap/ccft.env, sourced from shell RCs
 # — or, manually —
 export HTTPS_PROXY=http://127.0.0.1:7178
 export NODE_EXTRA_CA_CERTS=$HOME/.cc-flytrap/ca.pem
@@ -79,4 +79,4 @@ cargo run --release -- dev
 | Process | launchd-managed | foreground, dies with the shell |
 | CA | shared `~/.cc-flytrap/ca.pem` | shared `~/.cc-flytrap/ca.pem` |
 
-To use dev: `HTTPS_PROXY=http://127.0.0.1:7179 NODE_EXTRA_CA_CERTS=$HOME/.cc-flytrap/ca.pem claude -p "..."`. The CA is shared so trust setup carries over.
+To use dev: `HTTPS_PROXY=http://127.0.0.1:7179 NODE_EXTRA_CA_CERTS=$HOME/.cc-flytrap/ca.pem your-agent -p "..."`. The CA is shared so trust setup carries over.

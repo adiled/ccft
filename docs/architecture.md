@@ -3,7 +3,7 @@
 ## How it works
 
 ```
-claude  ──HTTPS_PROXY=http://127.0.0.1:7178──>  ccft  ──HTTPS h1.1──>  api.anthropic.com
+agent  ──HTTPS_PROXY=http://127.0.0.1:7178──>  ccft  ──HTTPS h1.1──>  model API
                                                   │
                                                   ├─ on_request:  decode → mutate `system` array → re-encode → forward
                                                   │
@@ -14,7 +14,7 @@ claude  ──HTTPS_PROXY=http://127.0.0.1:7178──>  ccft  ──HTTPS h1.1�
 
 Built on [`hudsucker`](https://github.com/omjadas/hudsucker), a hyper-1.x + tokio + rustls flytrap library. h1.1 is forced (Anthropic accepts it cleanly via ALPN, which sidesteps the open h2 issues across the Go/Rust flytrap ecosystem).
 
-The flytrap is **scoped to known model-provider hosts** via `should_intercept`. Today that's just `api.anthropic.com`. Every other CONNECT (e.g., `github.com`, `npm registry`, `pypi`) gets a raw passthrough tunnel — ccft never decrypts those bytes, so subprocesses spawned from a Claude session that don't trust ccft's CA don't fail TLS on them.
+The flytrap is **scoped to known model-provider hosts** via `should_intercept`. Today that's `api.anthropic.com`, plus any configured OpenAI-compatible local servers. Every other CONNECT (e.g., `github.com`, `npm registry`, `pypi`) gets a raw passthrough tunnel — ccft never decrypts those bytes, so subprocesses spawned from an agent session that don't trust ccft's CA don't fail TLS on them.
 
 ## TUI
 

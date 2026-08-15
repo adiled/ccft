@@ -19,7 +19,7 @@
 | `host` | `"127.0.0.1"` | Bind address |
 | `port` | `7178` | Bind port |
 | `system_override` | `""` | Extra system block injected into every `/v1/messages`. Empty = skip injection. |
-| `pain` | `false` | `false` trims Claude Code's three large bloat blocks; `true` leaves them alone. |
+| `pain` | `false` | `false` trims Claude Code's three large bloat blocks; `true` leaves them alone. (Only relevant to Claude Code traffic.) |
 | `ledger` | `true` | Write per-response JSONL records to `~/.local/share/ccft/ledger.jsonl`. |
 
 Config reload requires restart (`ccft restart`).
@@ -35,7 +35,6 @@ Each line in `~/.local/share/ccft/ledger.jsonl`:
   "human": "adil", "agent": "host-70bbe330",
   "sid": "170bf0f2-ae59-46b6-af51-22c1b107c08e",
   "cip": "127.0.0.1:54188", "pip": "124.29.237.112", "sip": null,
-  "ep": "https://api.anthropic.com/v1/messages?beta=true",
   "reg": null, "model": "claude-haiku-4-5-20251001",
   "in": 520, "out": 84, "tot": 604, "lat": 758,
   "cr": 0, "cc": 0, "c_us": 115
@@ -72,9 +71,9 @@ The TUI brainrot panel reads this file as-is.
 | `ccft start` | `launchctl kickstart` |
 | `ccft stop` | `launchctl bootout` |
 | `ccft restart` | bootout + bootstrap |
-| `ccft trust` | Print env vars for Claude |
-| `ccft trust --apply` | Write env into `~/.claude.json` (with backup) |
-| `ccft trust --revoke` | Remove env from `~/.claude.json` |
+| `ccft trust` | Print env vars for routing any coding agent through ccft |
+| `ccft trust --apply` | Write proxy + CA env into `~/.cc-flytrap/ccft.env`, source it from every shell RC (with backup) |
+| `ccft trust --revoke` | Remove the sourced env block from shell RCs (with backup) |
 | `ccft trust --ca` | Dump CA PEM to stdout |
 | `ccft logs [-n 50]` | Tail `launchd.log` |
 | `ccft tui` (or `ccft` alone at a tty) | Full-screen interactive dashboard with time-dimension dials |

@@ -236,7 +236,7 @@ mod platform {
         fs::create_dir_all(unit_dir())?;
         let unit = format!(
             r#"[Unit]
-Description=ccft - Claude Code flytrap
+Description=ccft
 After=network-online.target
 
 [Service]
