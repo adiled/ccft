@@ -65,10 +65,10 @@ enum Cmd {
     Restart,
     /// Print env vars to route any coding agent through ccft, or apply/revoke.
     Trust {
-        /// Write HTTPS_PROXY + NODE_EXTRA_CA_CERTS into ~/.claude.json (with backup).
+        /// Write HTTPS_PROXY + NODE_EXTRA_CA_CERTS into ~/.cc-flytrap/ccft.env and source it from every shell RC found in $HOME (with backup).
         #[arg(long)]
         apply: bool,
-        /// Remove flytrap env keys from ~/.claude.json (with backup).
+        /// Remove the sourced flytrap env block from every shell RC found in $HOME (with backup).
         #[arg(long)]
         revoke: bool,
         /// Dump the CA cert PEM to stdout.
