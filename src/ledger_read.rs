@@ -33,6 +33,9 @@ pub struct Record {
     /// Chars in the LAST user message of the request, when that message is
     /// a tool_result (bot-loop feedback). Counterpart to u_ch.
     pub tr_ch: u64,
+    /// Chars of the LLM's own hidden reasoning captured this turn (OpenAI
+    /// `reasoning_content` / Anthropic `thinking`). Always bot machinery.
+    pub th_ch: u64,
     /// Type-token ratio of the counted user text (lexical-diversity axis).
     /// 0.0 = absent/too-short (older schema) — never a real value.
     pub lex_div: f64,
@@ -67,6 +70,7 @@ impl Record {
             c_us: opt_u("c_us"),
             u_ch: u("u_ch"),
             tr_ch: u("tr_ch"),
+            th_ch: u("th_ch"),
             lex_div: f("lxd"),
             fn_word_frac: f("fnw"),
             ngram_entropy: f("nge"),

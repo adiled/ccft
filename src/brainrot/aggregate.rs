@@ -1438,6 +1438,7 @@ mod tests {
             c_us: None,
             u_ch: 0,
             tr_ch: 0,
+            th_ch: 0,
             lex_div: 0.0,
             fn_word_frac: 0.0,
             ngram_entropy: 0.0,

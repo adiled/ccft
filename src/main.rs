@@ -221,12 +221,17 @@ fn set_dev_env() {
 
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,hudsucker=warn,hyper=warn".into()),
-        )
-        .init();
+    // In dev mode (CCFT_DEV=1) force the ccft crate to debug level so the
+    // raw request/response debug dumps flow without amending the plist.
+    // Production keeps the env-filtered default.
+    let filter = if config::paths::is_dev() {
+        EnvFilter::try_new("ccft=debug,hudsucker=warn,hyper=warn")
+            .unwrap_or_else(|_| EnvFilter::new("ccft=debug"))
+    } else {
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "info,hudsucker=warn,hyper=warn".into())
+    };
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
 fn tail_logs(n: usize) -> Result<(), Box<dyn std::error::Error>> {

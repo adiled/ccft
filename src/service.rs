@@ -109,13 +109,22 @@ mod platform {
     pub fn write_unit(bin: &Path) -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(unit_dir())?;
         let log = paths::launchd_log();
+        // In dev mode the unit must launch the binary in parallel-dev mode,
+        // otherwise `ccft run` falls back to the production config (port
+        // 7178) and collides with the main install. launchd does not inherit
+        // the shell env, so bake CCFT_DEV into the plist's environment.
+        let env_block = if paths::is_dev() {
+            "    <key>EnvironmentVariables</key>\n    <dict>\n        <key>CCFT_DEV</key>\n        <string>1</string>\n    </dict>\n"
+        } else {
+            ""
+        };
         let plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key><string>{label}</string>
-    <key>ProgramArguments</key>
+{env}    <key>ProgramArguments</key>
     <array>
         <string>{bin}</string>
         <string>run</string>
@@ -128,6 +137,7 @@ mod platform {
 </plist>
 "#,
             label = super::label(),
+            env = env_block,
             bin = bin.display(),
             log = log.display(),
         );
@@ -234,6 +244,13 @@ mod platform {
 
     pub fn write_unit(bin: &Path) -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(unit_dir())?;
+        // In dev mode set CCFT_DEV in the unit environment so `ccft run`
+        // loads dev.json (port 7179) instead of the production config.
+        let env_line = if paths::is_dev() {
+            "Environment=CCFT_DEV=1\n"
+        } else {
+            ""
+        };
         let unit = format!(
             r#"[Unit]
 Description=ccft
@@ -241,13 +258,14 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart={bin} run
+{env}ExecStart={bin} run
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=default.target
 "#,
+            env = env_line,
             bin = bin.display(),
         );
         fs::write(unit_path(), unit)?;

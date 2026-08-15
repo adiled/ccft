@@ -38,21 +38,32 @@ Each line in `~/.local/share/ccft/ledger.jsonl`:
   "reg": null, "model": "claude-haiku-4-5-20251001",
   "in": 520, "out": 84, "tot": 604, "lat": 758,
   "cr": 0, "cc": 0, "c_us": 115,
-  "u_ch": 0, "tr_ch": 0, "lxd": 0.0, "fnw": 0.0, "nge": 0.0, "nvt": 0.0
+  "u_ch": 0, "tr_ch": 0, "th_ch": 0, "lxd": 0.0, "fnw": 0.0, "nge": 0.0, "nvt": 0.0
 }
 ```
 
-`u_ch`/`tr_ch` are char counts of the LAST user message, split by content
-type: `u_ch` = plain text (fresh human input), `tr_ch` = a `tool_result`
-(bot-loop continuation). `lxd` (type-token ratio), `fnw` (function-word
-fraction) and `nge` (bigram entropy) are lexical stats of the counted user
-text — a content-free "wordology" axis fused into the bot/driver split
-classifier. `nvt` is the cross-turn momentum axis: how much of the text's
-content bigrams were already seen earlier in the session (template reuse ⇒
-a bot driving the prompt). It's computed at the proxy against an in-memory
-per-session set; only the fraction is persisted, never the bigrams. All are
-`0.0` when text is absent or too short (older schema), which the classifier
-treats as "no signal".
+`u_ch`/`tr_ch` are char counts of the DELTA (content new to this session —
+see delta inference below), split by content type: `u_ch` = plain text
+(fresh human input), `tr_ch` = a tool result (bot-loop continuation; OpenAI
+`role:"tool"` messages and Anthropic `tool_result` blocks). `th_ch` is the
+LLM's own hidden-reasoning chars captured this turn (OpenAI
+`reasoning_content` / Anthropic `thinking`) — always bot machinery.
+`lxd` (type-token ratio), `fnw` (function-word fraction) and `nge` (bigram
+entropy) are lexical stats of the counted user text — a content-free
+"wordology" axis fused into the bot/driver split classifier. `nvt` is the
+cross-turn momentum axis: how much of the text's content bigrams were
+already seen earlier in the session (template reuse ⇒ a bot driving the
+prompt). It's computed at the proxy against an in-memory per-session set;
+only the fraction is persisted, never the bigrams.
+
+**Delta inference (anti-leakage):** resend-all (full-conversation) APIs
+resend the entire history in every request. Only messages whose fingerprint
+is new to the session are attributed, so stale content is never re-counted
+turn to turn. Per-session fingerprint + bigram state is in-memory only,
+never persisted.
+
+All are `0.0`/`0` when text is absent or too short (older schema), which
+the classifier treats as "no signal".
 
 The TUI brainrot panel reads this file as-is.
 

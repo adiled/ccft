@@ -454,6 +454,7 @@ fn synthesize_record_json(t: &Turn) -> String {
         "c_us": 0,
         "u_ch": t.u_ch,
         "tr_ch": t.tr_ch,
+        "th_ch": 0,
         "lxd": 0.0,
         "fnw": 0.0,
         "nge": 0.0,

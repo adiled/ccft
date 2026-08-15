@@ -2,12 +2,14 @@
 //! Schema mirrors cc-flytrap/ledger.py with two additions:
 //!
 //!   { ts, te, dt, human, agent, sid, cip, pip, sip, ep, reg, model,
-//!     in, out, tot, lat, cr, cc, c_us, u_ch, tr_ch, lxd, fnw, nge }
+//!     in, out, tot, lat, cr, cc, c_us, u_ch, tr_ch, th_ch, lxd, fnw, nge }
 //!
 //! `u_ch`/`tr_ch` are the char counts of the LAST user message in the
 //! request body, split by content type:
 //!   * u_ch  — chars when the message is plain text (fresh human input)
 //!   * tr_ch — chars when the message is a tool_result (bot continuation)
+//! `th_ch` is the LLM's own hidden-reasoning chars captured this turn
+//! (OpenAI `reasoning_content` / Anthropic `thinking`) — always bot machinery.
 //! `lxd`/`fnw`/`nge` are lexical stats (type-token ratio, function-word
 //! fraction, bigram entropy) of the counted user text — a second,
 //! content-free "wordology" axis for detecting bot-driven prompting.
@@ -119,6 +121,9 @@ pub struct LedgerRecord<'a> {
     /// Chars in the LAST user message when it's a tool_result (bot-loop
     /// continuation feedback). Counterpart to user_text_chars.
     pub tool_result_chars: u64,
+    /// Chars of the LLM's own hidden reasoning captured this turn (OpenAI
+    /// `reasoning_content` / Anthropic `thinking`). Always bot machinery.
+    pub thinking_chars: u64,
     /// Type-token ratio of the counted user text (lexical-diversity axis).
     /// 0.0 when absent/too-short — see the wordology classifier in
     /// brainrot/aggregate.rs.
@@ -163,6 +168,7 @@ pub fn append(rec: &LedgerRecord) {
         "c_us": rec.ccft_us,
         "u_ch": rec.user_text_chars,
         "tr_ch": rec.tool_result_chars,
+        "th_ch": rec.thinking_chars,
         "lxd": rec.lex_div,
         "fnw": rec.fn_word_frac,
         "nge": rec.ngram_entropy,

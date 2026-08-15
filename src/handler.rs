@@ -52,6 +52,10 @@ pub struct FlowMeta {
     pub user_text_chars: u64,
     /// Chars in the LAST user message when it's a tool_result.
     pub tool_result_chars: u64,
+    /// Chars of the LLM's own hidden reasoning captured this turn
+    /// (OpenAI `reasoning_content` / Anthropic `thinking`). Always bot
+    /// machinery — never driver.
+    pub thinking_chars: u64,
     /// Wire provider this request came from (anthropic / openai / other).
     pub provider: &'static str,
     /// Type-token ratio (lexical diversity) of the counted user text.
@@ -87,6 +91,10 @@ pub struct CcftHandler {
     /// instance for every connection), keyed by `session_id`. In-memory only;
     /// never persisted — we store just the novelty *fraction*.
     pub session_lex: Arc<DashMap<String, SessionLexMem>>,
+    /// Per-session cursor for DELTA inference — which content is new this
+    /// request vs. resent full history (size-increment / id-cursor /
+    /// text-block-hash backstop). In-memory only; never persisted.
+    pub session_fp: Arc<DashMap<String, SessionDelta>>,
 }
 
 impl CcftHandler {
@@ -96,6 +104,7 @@ impl CcftHandler {
             pending: Arc::new(DashMap::new()),
             seq: Arc::new(AtomicU64::new(0)),
             session_lex: Arc::new(DashMap::new()),
+            session_fp: Arc::new(DashMap::new()),
         }
     }
 }
@@ -128,7 +137,9 @@ fn now_wall_secs() -> f64 {
 
 /// Lexical statistics of the counted user text, plus the char counts.
 /// `chars` = u_ch (fresh-human plain-text chars), `tool_chars` = tr_ch
-/// (tool_result continuation chars). `lex_div` (type-token ratio),
+/// (tool_result continuation chars), `thinking_chars` = thk (the LLM's own
+/// hidden reasoning — `reasoning_content` on OpenAI, `thinking` blocks on
+/// Anthropic — always bot machinery). `lex_div` (type-token ratio),
 /// `fn_word_frac` (function-word fraction) and `ngram_entropy` (bigram
 /// Shannon entropy) are the "wordology" axis: cheap, no-model stylometric
 /// features of the counted text. `novelty` is the cross-turn momentum axis:
@@ -139,6 +150,8 @@ fn now_wall_secs() -> f64 {
 pub struct UserTextLex {
     pub chars: u64,
     pub tool_chars: u64,
+    /// Chars of the LLM's own hidden reasoning captured this turn.
+    pub thinking_chars: u64,
     pub lex_div: f64,
     pub fn_word_frac: f64,
     pub ngram_entropy: f64,
@@ -146,122 +159,313 @@ pub struct UserTextLex {
     pub novelty: f64,
 }
 
-/// Inspect the LAST user message of an Anthropic /v1/messages request body.
-/// When the message is plain text we count the (system-block-stripped)
-/// chars AND compute lexical statistics; when it's a tool_result we only
-/// count the continuation chars (no lexical signal — it's bot feedback by
-/// construction). We use the text/tool_result distinction to drive the
-/// kinetics-only "driver" score downstream — gap-based heuristics conflate
-/// bot tool-loops with humans pushing hard, but the message-role payload
-/// tells us exactly which it is. The lexical axis is a second, content-free
-/// signal for "another bot controlling the prompting" — plain text that is
-/// machine-flat (low lexical diversity / low n-gram entropy) even when it
-/// paces like a human.
+/// Per-session cursor state for DELTA inference — which content is genuinely
+/// new this request vs. resent full history. In-memory only; never persisted.
+/// (The ledger persists only `sid`; there is no per-session message cursor in
+/// the record. A resumed session's backlog is handled by FirstContact below.)
+#[derive(Clone, Default)]
+struct SessionDelta {
+    /// Message count at the last request for this session — the
+    /// size-increment heuristic's cursor. If the array grows, the new turn
+    /// was appended; if it shrinks/stays, a harness pruned history and the
+    /// increment is untrustworthy (fall through to ids / hashing).
+    last_len: usize,
+    /// Highest message id seen (message-id cursor), when ids are present.
+    last_id: Option<String>,
+    /// Text-block hashes seen (robust backstop when ids absent AND history
+    /// is pruned). Hashes ONLY the stable text core, NOT whole messages —
+    /// harnesses aggressively prune volatile fields (reasoning_content,
+    /// tool_calls, image blocks) but they rarely prune the actual text.
+    seen_text: HashSet<u64>,
+}
+
+/// Which delta strategy fired for this request (for debug/accounting).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DeltaMode {
+    /// First contact: no prior request for this session. Attribute ONLY the
+    /// last user turn — never over-count a resumed session's backlog.
+    FirstContact,
+    /// Size-increment: the array grew, so the new turn is the appended tail.
+    /// Per directive: worth only the LAST user turn extraction.
+    Increment,
+    /// Message-id cursor: extract everything after the last seen id.
+    IdCursor,
+    /// Text-block hash fallback: per-message filter against seen_text.
+    TextHash,
+}
+
+/// Fingerprint ONLY the stable text core of a message (content text blocks,
+/// tool-result text) — NOT volatile fields like `reasoning_content`,
+/// `tool_calls`, image blocks. Harnesses prune those; they rarely prune the
+/// actual text. In-memory only, so DefaultHasher is fine.
+fn text_fingerprint(msg: &Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    if let Some(c) = msg.get("content") {
+        if let Some(s) = c.as_str() {
+            s.hash(&mut h);
+        } else if let Some(arr) = c.as_array() {
+            for b in arr {
+                if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                    t.hash(&mut h);
+                } else if let Some(inner) = b.get("content") {
+                    if let Some(s) = inner.as_str() {
+                        s.hash(&mut h);
+                    } else if let Some(arr2) = inner.as_array() {
+                        for x in arr2 {
+                            if let Some(t) = x.get("text").and_then(|t| t.as_str()) {
+                                t.hash(&mut h);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    h.finish()
+}
+
+/// Infer the DELTA from a request body and align the provider wire shapes.
 ///
-/// Returns `(UserTextLex::default(), [])` (all zeros) if parsing fails or
-/// the schema doesn't match — caller treats the absence as "unknown" rather
-/// than zero pressure. `seen` is the session's content-bigram memory; the
-/// returned `Vec<String>` is this text's bigrams to merge into it.
-fn extract_user_message_lex(
+/// PROBLEM: resend-all (full-conversation) APIs resend the entire history in
+/// every request. If we attributed the "last user message" per request, stale
+/// content would be re-counted every call — turn-to-turn leakage.
+///
+/// STRATEGY (layered, most-precise-first):
+///   1. Size-increment — for sessions we can attribute to a session (we have
+///      `sid`): if the messages array grew, the new turn was appended; that
+///      request is worth only the LAST user turn extraction. Untrustworthy
+///      when a harness prunes/summarizes history (array shrinks/stays).
+///   2. Message-id cursor — when ids are present, extract everything after
+///      the last seen id. (This OpenAI-compatible wire carries no ids.)
+///   3. Text-block hash — robust fallback: per-message filter over ONLY the
+///      stable text core, because harnesses prune volatile fields but rarely
+///      the actual text blocks.
+///
+/// Among the NEW messages we count, per provider wire shape:
+///   * user-role text blocks        → u_ch (fresh human plain text, cleaned)
+///   * tool results                 → tr_ch (Anthropic `tool_result` blocks;
+///                                      OpenAI `role:"tool"` + tool_call_id)
+///   * LLM hidden reasoning         → thinking_chars (Anthropic `thinking`
+///                                      blocks; OpenAI `reasoning_content`)
+///
+/// Returns `(lex, to_merge, new_state)`: wordology stats over the NEW user
+/// text, its content bigrams, and the updated per-session cursor. All-zero
+/// on parse failure / no delta / too-short — callers treat 0.0 as "no signal".
+fn extract_request_delta(
     body_bytes: &[u8],
-    seen: Option<&HashSet<String>>,
-) -> (UserTextLex, Vec<String>) {
-    let none = || (UserTextLex::default(), Vec::new());
+    seen_lex: Option<&HashSet<String>>,
+    prev: Option<&SessionDelta>,
+) -> (UserTextLex, Vec<String>, Option<SessionDelta>) {
+    let none = || (UserTextLex::default(), Vec::new(), None);
     let Ok(data): Result<Value, _> = serde_json::from_slice(body_bytes) else {
         return none();
     };
     let Some(messages) = data.get("messages").and_then(|m| m.as_array()) else {
         return none();
     };
-    // Find the last message with role=user.
-    let last_user = messages
-        .iter()
-        .rev()
-        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"));
-    let Some(msg) = last_user else { return none() };
-    let Some(content) = msg.get("content") else { return none() };
 
-    // content can be a string (older form) or an array of content blocks.
-    let mut parts: Vec<String> = Vec::new();
-    let mut tool = 0u64;
-    let mut text_block_sizes: Vec<usize> = Vec::new();
-    if let Some(s) = content.as_str() {
-        let clean = clean_user_text(s);
-        if !clean.is_empty() {
-            parts.push(clean);
+    // Detect whether this wire carries message ids.
+    let has_ids = messages.iter().any(|m| {
+        m.get("id").and_then(|i| i.as_str()).map(|s| !s.is_empty()).unwrap_or(false)
+    });
+
+    // Resolve WHICH messages are genuinely new (the delta), per strategy.
+    let mut new_flags: Vec<bool> = vec![false; messages.len()];
+    let mut mode = DeltaMode::TextHash;
+    match prev {
+        None => {
+            // First contact (incl. resumed sessions): attribute ONLY the last
+            // user turn — never over-count a backlog.
+            mode = DeltaMode::FirstContact;
+            if let Some(idx) = last_user_idx(&messages) {
+                new_flags[idx] = true;
+            }
         }
-        text_block_sizes.push(s.chars().count());
-    } else if let Some(blocks) = content.as_array() {
-        for b in blocks {
-            let kind = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            match kind {
-                "text" => {
-                    if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                        let clean = clean_user_text(t);
-                        if !clean.is_empty() {
-                            parts.push(clean);
+        Some(p) => {
+            // 1. Size-increment: strictly-grown array ⇒ new turn appended.
+            if messages.len() > p.last_len {
+                mode = DeltaMode::Increment;
+                // Worth only the LAST user turn extraction.
+                if let Some(idx) = last_user_idx(&messages) {
+                    new_flags[idx] = true;
+                }
+            }
+            // 2. Message-id cursor (ids present but increment unreliable).
+            else if has_ids && p.last_id.is_some() {
+                mode = DeltaMode::IdCursor;
+                let last_id = p.last_id.as_ref().unwrap();
+                if let Some(idx) = messages.iter().position(|m| {
+                    m.get("id").and_then(|i| i.as_str()) == Some(last_id.as_str())
+                }) {
+                    for i in (idx + 1)..messages.len() {
+                        new_flags[i] = true;
+                    }
+                } else {
+                    // Last id pruned away — nothing reliable to delta, so
+                    // fall back to per-message hashing.
+                    mode = DeltaMode::TextHash;
+                    for (i, m) in messages.iter().enumerate() {
+                        if !p.seen_text.contains(&text_fingerprint(m)) {
+                            new_flags[i] = true;
                         }
-                        text_block_sizes.push(t.chars().count());
                     }
                 }
-                "tool_result" => {
-                    // tool_result.content is itself either a string or an
-                    // array of {type:"text", text:"..."} (or image) blocks.
-                    if let Some(c) = b.get("content") {
-                        if let Some(s) = c.as_str() {
-                            tool += s.chars().count() as u64;
-                        } else if let Some(arr) = c.as_array() {
-                            for inner in arr {
-                                if let Some(t) = inner.get("text").and_then(|t| t.as_str()) {
-                                    tool += t.chars().count() as u64;
+            }
+            // 3. Text-block hash (robust fallback).
+            else {
+                mode = DeltaMode::TextHash;
+                for (i, m) in messages.iter().enumerate() {
+                    if !p.seen_text.contains(&text_fingerprint(m)) {
+                        new_flags[i] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Build the updated session cursor: always advance last_len, track the
+    // max message id, and seed seen_text with every message's text hash so
+    // history is marked seen even if a later request falls back to hashing.
+    let mut seen_text: HashSet<u64> = match &prev {
+        Some(p) => p.seen_text.clone(),
+        None => HashSet::new(),
+    };
+    for m in messages.iter() {
+        seen_text.insert(text_fingerprint(m));
+    }
+    let last_id = messages
+        .iter()
+        .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
+        .max()
+        .map(|s| s.to_string());
+    let new_state = Some(SessionDelta {
+        last_len: messages.len(),
+        last_id,
+        seen_text,
+    });
+    debug!("[ccft][delta] mode={:?} msgs={} new_flags={}/{}", mode, messages.len(),
+        new_flags.iter().filter(|f| **f).count(), new_flags.len());
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut tool = 0u64;
+    let mut thinking = 0u64;
+    let mut text_block_sizes: Vec<usize> = Vec::new();
+
+    for (i, msg) in messages.iter().enumerate() {
+        if !new_flags[i] {
+            // Repeated/stale history — anti-leakage: attribute nothing.
+            continue;
+        }
+
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+
+        // OpenAI tool results arrive as role="tool" + tool_call_id.
+        if role == "tool" {
+            if let Some(c) = msg.get("content").and_then(|c| c.as_str()) {
+                tool += c.chars().count() as u64;
+            } else if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
+                for inner in arr {
+                    if let Some(t) = inner.get("text").and_then(|t| t.as_str()) {
+                        tool += t.chars().count() as u64;
+                    }
+                }
+            }
+            continue;
+        }
+
+        // OpenAI LLM reasoning (thinking) rides on assistant messages.
+        if role == "assistant" {
+            if let Some(rc) = msg.get("reasoning_content").and_then(|r| r.as_str()) {
+                thinking += rc.chars().count() as u64;
+            }
+        }
+
+        let Some(content) = msg.get("content") else { continue };
+        if let Some(s) = content.as_str() {
+            // Older string form. Only user-role counts as human text.
+            if role == "user" {
+                let clean = clean_user_text(s);
+                if !clean.is_empty() {
+                    parts.push(clean);
+                }
+                text_block_sizes.push(s.chars().count());
+            }
+        } else if let Some(blocks) = content.as_array() {
+            for b in blocks {
+                let kind = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                match kind {
+                    "text" => {
+                        if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                            let clean = clean_user_text(t);
+                            if !clean.is_empty() {
+                                parts.push(clean);
+                            }
+                            text_block_sizes.push(t.chars().count());
+                        }
+                    }
+                    "tool_result" => {
+                        // Anthropic tool result: content is a string or an
+                        // array of {type:"text", text:"..."} (or image) blocks.
+                        if let Some(c) = b.get("content") {
+                            if let Some(s) = c.as_str() {
+                                tool += s.chars().count() as u64;
+                            } else if let Some(arr) = c.as_array() {
+                                for inner in arr {
+                                    if let Some(t) = inner.get("text").and_then(|t| t.as_str()) {
+                                        tool += t.chars().count() as u64;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                _ => {}
-            }
-        }
-        // Debug: when the result is suspiciously large for "user text" (a
-        // human can't type 5000 chars/request), dump the block structure so
-        // we can see what's being counted. Temporary.
-        let text_chars: u64 = parts.iter().map(|s| s.chars().count() as u64).sum();
-        if text_chars > 5000 {
-            let n_blocks = blocks.len();
-            warn!(
-                "[ccft][uch-big] text={} (raw_blocks={}, text_block_sizes={:?})",
-                text_chars, n_blocks, text_block_sizes
-            );
-            // Also dump first 500 chars of the last text block we counted
-            for b in blocks.iter().rev() {
-                if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                    if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                        let preview: String = t.chars().take(300).collect();
-                        warn!("[ccft][uch-big] last-text-preview: {:?}", preview);
-                        break;
+                    "thinking" => {
+                        // Anthropic thinking block on the assistant side.
+                        if let Some(t) = b.get("thinking").and_then(|t| t.as_str()) {
+                            thinking += t.chars().count() as u64;
+                        }
                     }
+                    _ => {}
                 }
             }
         }
-    } else {
-        return none();
+    }
+
+    // Debug: when the delta user text is suspiciously large for "user text"
+    // (a human can't type 5000 chars in one delta), dump the block structure
+    // so we can see what's being counted. Temporary.
+    let text_chars: u64 = parts.iter().map(|s| s.chars().count() as u64).sum();
+    if text_chars > 5000 {
+        warn!(
+            "[ccft][uch-big] delta_text={} (raw_messages={})",
+            text_chars,
+            messages.len()
+        );
     }
 
     let clean = parts.join(" ");
     let (lex_div, fnw, nge) = lexical_stats(&clean);
-    let (novelty, to_merge) = novelty_fraction(&clean, seen);
+    let (novelty, to_merge) = novelty_fraction(&clean, seen_lex);
     let chars: u64 = parts.iter().map(|s| s.chars().count() as u64).sum();
     (
         UserTextLex {
             chars,
             tool_chars: tool,
+            thinking_chars: thinking,
             lex_div,
             fn_word_frac: fnw,
             ngram_entropy: nge,
             novelty,
         },
         to_merge,
+        new_state,
     )
+}
+
+/// Index of the LAST message with role=user (the newest human input in a
+/// resend-all tail), or None.
+fn last_user_idx(messages: &[Value]) -> Option<usize> {
+    messages.iter().rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
 }
 
 /// Count chars of a user-text block, EXCLUDING content that didn't come
@@ -302,6 +506,11 @@ const FUNCTION_WORDS: &[&str] = &[
 /// session: on overflow we reset the window, so novelty becomes "recently
 /// seen" rather than "ever seen". A heuristic trade-off, not a precision one.
 const SESSION_LEX_CAP: usize = 50_000;
+
+/// Cap on text-block hashes remembered per session (the delta-inference
+/// backstop). On overflow we reset the window: beyond it, content is treated
+/// as new again (re-attributed). A bounded-memory trade-off like SESSION_LEX_CAP.
+const SESSION_FP_CAP: usize = 50_000;
 
 /// Cheap, no-model stylometric features of the counted user text:
 ///   * `lex_div`   — type-token ratio (unique / total tokens). Repetitive,
@@ -626,21 +835,41 @@ impl HttpHandler for CcftHandler {
             }
         };
 
+        // Debug: dump the RAW OpenAI request body (pre-mutation) so we can
+        // see the actual message wire shape (roles/content blocks) when
+        // diagnosing openai shape handling. Gated behind RUST_LOG=debug.
+        if provider == PROVIDER_OPENAI {
+            debug!(
+                "[ccft][openai][raw-req] {} bytes: {}",
+                collected.len(),
+                String::from_utf8_lossy(&collected)
+            );
+        }
+
         let session_id = session::extract(&parts.headers, Some(&collected));
-        // Wordology (lex stats + cross-turn novelty) is captured only on the
-        // Anthropic wire shape we know how to parse. Other providers (OpenAI
-        // etc.) yield a default (all-zero) signal until their message schema
-        // is mapped — the openai-shape diagnosis is tracked separately.
-        let (ux, to_merge) = if provider == PROVIDER_ANTHROPIC {
-            match &session_id {
-                Some(sid) => match self.session_lex.get(sid) {
-                    Some(guard) => extract_user_message_lex(&collected, Some(&*guard)),
-                    None => extract_user_message_lex(&collected, None),
-                },
-                None => extract_user_message_lex(&collected, None),
+        // Wordology (lex stats + cross-turn novelty) applies GLOBALLY across
+        // all providers, not per-provider: the parser reads a generic
+        // `messages` array (role="user", content blocks of type text/
+        // tool_result) that OpenAI also uses. Only the raw-body debug log
+        // is provider-specific.
+        // Delta inference: attribute ONLY content genuinely new to this
+        // session (anti-leakage for resend-all conversation APIs). Wordology
+        // applies globally, not per-provider — the parser reads a generic
+        // `messages` array and aligns each provider's wire shape
+        // (see extract_request_delta). Strategy: size-increment → message-id
+        // cursor → text-block hash, per the layered design.
+        let (ux, to_merge, new_state) = match &session_id {
+            Some(sid) => {
+                let lex = self.session_lex.get(sid);
+                let fp = self.session_fp.get(sid);
+                let d = extract_request_delta(
+                    &collected,
+                    lex.as_ref().map(|g| &**g),
+                    fp.as_ref().map(|g| &**g),
+                );
+                (d.0, d.1, d.2)
             }
-        } else {
-            (UserTextLex::default(), Vec::new())
+            None => extract_request_delta(&collected, None, None),
         };
         if let Some(sid) = &session_id {
             if !to_merge.is_empty() {
@@ -650,6 +879,13 @@ impl HttpHandler for CcftHandler {
                 }
                 if mem.len() > SESSION_LEX_CAP {
                     mem.clear();
+                }
+            }
+            if let Some(ns) = new_state {
+                let mut mem = self.session_fp.entry(sid.clone()).or_default();
+                *mem = ns;
+                if mem.seen_text.len() > SESSION_FP_CAP {
+                    mem.seen_text.clear();
                 }
             }
         }
@@ -669,6 +905,7 @@ impl HttpHandler for CcftHandler {
             server_ip: None,
             user_text_chars: ux.chars,
             tool_result_chars: ux.tool_chars,
+            thinking_chars: ux.thinking_chars,
             provider,
             lex_div: ux.lex_div,
             fn_word_frac: ux.fn_word_frac,

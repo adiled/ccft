@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::handler::FlowMeta;
 
@@ -90,6 +90,10 @@ impl<B> SseTap<B> {
         };
 
         if self.meta.provider == crate::handler::PROVIDER_OPENAI {
+            // Debug: dump each RAW SSE data line of the OpenAI response so
+            // we can see the actual stream wire shape when diagnosing
+            // openai shape handling. Gated behind RUST_LOG=debug.
+            debug!("[ccft][openai][raw-resp] data: {}", json_str);
             self.parse_openai_event(&d);
             return;
         }
@@ -179,6 +183,7 @@ impl<B> SseTap<B> {
             ccft_us: self.meta.ccft_us_req,
             user_text_chars: self.meta.user_text_chars,
             tool_result_chars: self.meta.tool_result_chars,
+            thinking_chars: self.meta.thinking_chars,
             lex_div: self.meta.lex_div,
             fn_word_frac: self.meta.fn_word_frac,
             ngram_entropy: self.meta.ngram_entropy,
