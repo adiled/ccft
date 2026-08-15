@@ -58,6 +58,10 @@ pub struct FlowMeta {
     pub thinking_chars: u64,
     /// Wire provider this request came from (anthropic / openai / other).
     pub provider: &'static str,
+    /// OpenAI request `previous_response_id` (the response this turn
+    /// continues) — the chain link for the ledger `ref`. Response-side `id`
+    /// is captured separately in the tap.
+    pub reference: Option<String>,
     /// Type-token ratio (lexical diversity) of the counted user text.
     /// 0.0 when absent/too-short — see `UserTextLex`.
     pub lex_div: f64,
@@ -780,6 +784,15 @@ fn mutate_openai_body(body_bytes: &[u8], cfg: &Config) -> Option<Bytes> {
     Some(Bytes::from(new_body))
 }
 
+/// Read the OpenAI request's continuation handle `previous_response_id` (the
+/// response id this turn continues). Returns None when absent / unparseable.
+fn extract_previous_response_id(body: &[u8]) -> Option<String> {
+    let v: Value = serde_json::from_slice(body).ok()?;
+    v.get("previous_response_id")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+}
+
 const FLYTRAP_HOSTS: &[&str] = &["api.anthropic.com"];
 
 fn should_flytrap_host(cfg: &Config, host: &str, port: u16) -> bool {
@@ -890,6 +903,15 @@ impl HttpHandler for CcftHandler {
             }
         }
 
+        // Continuation handle for the ledger `ref`: OpenAI requests carry
+        // `previous_response_id` (the response this turn continues) on the
+        // request, while `id` lives on the response. Either lands in `ref`.
+        let reference = if provider == PROVIDER_OPENAI {
+            extract_previous_response_id(&collected)
+        } else {
+            None
+        };
+
         let new_body = match provider {
             PROVIDER_ANTHROPIC => mutate_messages_body(&collected, &self.cfg).unwrap_or(collected),
             PROVIDER_OPENAI => mutate_openai_body(&collected, &self.cfg).unwrap_or(collected),
@@ -907,6 +929,7 @@ impl HttpHandler for CcftHandler {
             tool_result_chars: ux.tool_chars,
             thinking_chars: ux.thinking_chars,
             provider,
+            reference,
             lex_div: ux.lex_div,
             fn_word_frac: ux.fn_word_frac,
             ngram_entropy: ux.ngram_entropy,

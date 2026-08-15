@@ -107,6 +107,10 @@ pub struct LedgerRecord<'a> {
     pub client_ip: Option<&'a str>,
     pub server_ip: Option<&'a str>,
     pub region: Option<&'a str>,
+    /// OpenAI response `id` / Anthropic message `id` — a continuation handle
+    /// for chaining turns without persisting message history. The next
+    /// request's `previous_response_id` should equal this.
+    pub reference: Option<&'a str>,
     pub model: Option<&'a str>,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -158,6 +162,7 @@ pub fn append(rec: &LedgerRecord) {
         "pip": public_ip(),
         "sip": rec.server_ip,
         "reg": rec.region,
+        "ref": rec.reference,
         "model": rec.model.unwrap_or("unknown"),
         "in": rec.input_tokens,
         "out": rec.output_tokens,

@@ -36,6 +36,11 @@ pub struct SseTap<B> {
     label: String,
     meta: FlowMeta,
     delta_chars: u64,
+    /// OpenAI response `id` (e.g. chatcmpl-…) / Anthropic message `id` — the
+    /// handle a later request's `previous_response_id` would reference. Stored
+    /// as `ref` in the ledger so turns can be chained WITHOUT persisting
+    /// message history.
+    ref_id: Option<String>,
 }
 
 impl<B> SseTap<B> {
@@ -49,6 +54,7 @@ impl<B> SseTap<B> {
             label: label.into(),
             meta,
             delta_chars: 0,
+            ref_id: None,
         }
     }
 
@@ -101,6 +107,9 @@ impl<B> SseTap<B> {
         match d.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 if let Some(msg) = d.get("message") {
+                    if let Some(id) = msg.get("id").and_then(Value::as_str) {
+                        self.ref_id = Some(id.to_string());
+                    }
                     if let Some(model) = msg.get("model").and_then(Value::as_str) {
                         self.usage.model = Some(model.to_string());
                     }
@@ -128,6 +137,9 @@ impl<B> SseTap<B> {
     }
 
     fn parse_openai_event(&mut self, d: &Value) {
+        if let Some(id) = d.get("id").and_then(Value::as_str) {
+            self.ref_id = Some(id.to_string());
+        }
         if let Some(model) = d.get("model").and_then(Value::as_str) {
             self.usage.model = Some(model.to_string());
         }
@@ -167,6 +179,15 @@ impl<B> SseTap<B> {
             (self.usage.input_tokens, self.usage.output_tokens)
         };
 
+        // Ledger `ref` is a continuation handle, not a message: prefer the
+        // request's `previous_response_id` (this turn's parent), else the
+        // response `id` (this turn's own handle).
+        let reference = self
+            .meta
+            .reference
+            .as_deref()
+            .or_else(|| self.ref_id.as_deref());
+
         let rec = ledger::LedgerRecord {
             timestamp_start: self.meta.started_wall,
             timestamp_end: now_wall,
@@ -174,6 +195,7 @@ impl<B> SseTap<B> {
             client_ip: Some(&self.label),
             server_ip: self.meta.server_ip.as_deref(),
             region: None,
+            reference,
             model: self.usage.model.as_deref(),
             input_tokens,
             output_tokens,

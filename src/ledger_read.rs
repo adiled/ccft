@@ -25,6 +25,9 @@ pub struct Record {
     pub cr: u64,
     pub cc: u64,
     pub c_us: Option<u64>,
+    /// OpenAI response `id` / Anthropic message `id` — continuation handle
+    /// for chaining turns without persisting message history.
+    pub reference: Option<String>,
     /// Chars in the LAST user message of the request, when that message is
     /// plain text (i.e. fresh human input this turn). 0 when the last user
     /// message is a tool_result (bot-loop continuation), or when the field
@@ -61,6 +64,7 @@ impl Record {
             te: f("te"),
             model: s("model"),
             sid: s("sid"),
+            reference: s("ref"),
             r#in: u("in"),
             out: u("out"),
             tot: u("tot"),
