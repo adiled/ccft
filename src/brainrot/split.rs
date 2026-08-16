@@ -1,9 +1,8 @@
-//! split — driver vs bot turn split. Classifies turns by inter-arrival gap.
-//! Default: fits a 2-component log-normal gap model and labels each turn by
-//! posterior probability (learned boundary, no magic 5s). `--det` forces the
-//! deterministic first-turn-or-gap>5s rule. Mirrors brainrot.py split_aggregate.
+//! Driver vs bot turn split by inter-arrival gap. Learned log-normal model by default; --det forces 5s rule.
 
-use crate::brainrot::aggregate::{classify_turns, classify_turns_prob_with_model, TurnKind};
+use crate::brainrot::aggregate::{
+    classify_turns, classify_turns_prob_with_model, split_summary, TurnKind,
+};
 use crate::ledger_read::{compute_coverage, iter_records, load_state_events, parse_range, Record};
 use crate::theme::*;
 use std::collections::HashMap;
@@ -26,7 +25,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     header("brainrot split", &range.label);
 
     if cov.currently_off {
-        bullet(&red("⚠ ledger is OFF — no records being captured"));
+        bullet(&red("⚠ ledger is OFF, no records being captured"));
         println!();
         return Ok(());
     }
@@ -34,7 +33,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         if !cov.off_intervals.is_empty() {
             let off_s: f64 = cov.off_intervals.iter().map(|(a, b)| b - a).sum();
             bullet(&dim(&format!(
-                "(no records — ledger was off for {} of {})",
+                "(no records, ledger was off for {} of {})",
                 fmt_dur(off_s),
                 fmt_dur(cov.total_s)
             )));
@@ -61,19 +60,18 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             m.log_lik
         )));
     } else if !records.is_empty() && !use_det {
-        bullet(&dim("no stable 2-component gap split — fell back to deterministic 5s rule"));
+        bullet(&dim(
+            "no stable 2-component gap split, fell back to deterministic 5s rule",
+        ));
     }
     if !use_det {
-        let (n_lex, n_tr, n_nvt) = records.iter().fold(
-            (0u64, 0u64, 0u64),
-            |(l, t, v), r| {
-                (
-                    l + u64::from(r.lex_div > 0.0),
-                    t + r.tr_ch,
-                    v + u64::from(r.nvt > 0.0),
-                )
-            },
-        );
+        let (n_lex, n_tr, n_nvt) = records.iter().fold((0u64, 0u64, 0u64), |(l, t, v), r| {
+            (
+                l + u64::from(r.lex_div > 0.0),
+                t + r.tr_ch,
+                v + u64::from(r.nvt > 0.0),
+            )
+        });
         if n_lex > 0 || n_tr > 0 {
             bullet(&dim(&format!(
                 "wordology axis: {} plain-text turns w/ lexical stats · {} tool_result turns · {} w/ cross-turn novelty → fused into labels",
@@ -102,7 +100,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     for (_, mut idxs) in by_sid.clone() {
         idxs.sort_by(|a, b| {
-            records[*a].ts.partial_cmp(&records[*b].ts).unwrap_or(std::cmp::Ordering::Equal)
+            records[*a]
+                .ts
+                .partial_cmp(&records[*b].ts)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         let mut last_drv_ts: Option<f64> = None;
         for i in &idxs {
@@ -119,7 +120,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut loop_lens: Vec<u32> = Vec::new();
     for (_, mut idxs) in by_sid {
         idxs.sort_by(|a, b| {
-            records[*a].ts.partial_cmp(&records[*b].ts).unwrap_or(std::cmp::Ordering::Equal)
+            records[*a]
+                .ts
+                .partial_cmp(&records[*b].ts)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         let mut cur: u32 = 0;
         for i in &idxs {
@@ -160,16 +164,28 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let _ = (drv_in_total,); // silence
 
     let total = drv_n + bot_n;
-    let drv_pct = if total > 0 { drv_n as f64 / total as f64 * 100.0 } else { 0.0 };
-    let bot_pct = if total > 0 { bot_n as f64 / total as f64 * 100.0 } else { 0.0 };
+    let drv_pct = if total > 0 {
+        drv_n as f64 / total as f64 * 100.0
+    } else {
+        0.0
+    };
+    let bot_pct = if total > 0 {
+        bot_n as f64 / total as f64 * 100.0
+    } else {
+        0.0
+    };
     let drv_avg_tok = if drv_n > 0 { drv_tok / drv_n } else { 0 };
     let bot_avg_tok = if bot_n > 0 { bot_tok / bot_n } else { 0 };
     let drv_avg_lat = if !drv_lats.is_empty() {
         drv_lats.iter().sum::<u64>() / drv_lats.len() as u64
-    } else { 0 };
+    } else {
+        0
+    };
     let bot_avg_lat = if !bot_lats.is_empty() {
         bot_lats.iter().sum::<u64>() / bot_lats.len() as u64
-    } else { 0 };
+    } else {
+        0
+    };
 
     println!();
     println!(
@@ -254,24 +270,14 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     section("ratio");
     let ratio_str = format!("{}/{}", drv_pct as u64, bot_pct as u64);
-    let summary = if drv_n == 0 {
-        dim("no driver turns observed").to_string()
-    } else if bot_n == 0 {
-        dim("pure prompting — no tool loops").to_string()
-    } else if drv_pct >= 60.0 {
-        dim("driver-heavy — lots of typing, agent doing little tool work").to_string()
-    } else if bot_pct >= 75.0 {
-        dim("bot-heavy — agent is grinding through tool loops").to_string()
-    } else {
-        dim("balanced — driver steers, agent acts").to_string()
-    };
+    let summary = dim(split_summary(drv_pct, bot_pct, drv_n, bot_n));
     println!("    {:>6}    {}", ratio_str, summary);
 
     if drv_n > 0 {
         let band = if drv_avg_tok > 8000 {
-            dim("heavy — long prompts or paste-heavy")
+            dim("heavy: long prompts or paste-heavy")
         } else if drv_avg_tok < 200 {
-            dim("light — short directive prompts")
+            dim("light: short directive prompts")
         } else {
             dim("normal range")
         };

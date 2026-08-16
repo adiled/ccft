@@ -28,28 +28,110 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let bot_b = bot_score(&b, &baseline) as i64;
     let drv_a = driver_score(&a, &baseline) as i64;
     let drv_b = driver_score(&b, &baseline) as i64;
-    let avg_lat_a = if a.n > 0 { a.lat_sum as f64 / a.n as f64 } else { 0.0 };
-    let avg_lat_b = if b.n > 0 { b.lat_sum as f64 / b.n as f64 } else { 0.0 };
-    let avg_in_a = if a.n > 0 { a.r#in as f64 / a.n as f64 } else { 0.0 };
-    let avg_in_b = if b.n > 0 { b.r#in as f64 / b.n as f64 } else { 0.0 };
-    let avg_out_a = if a.n > 0 { a.out as f64 / a.n as f64 } else { 0.0 };
-    let avg_out_b = if b.n > 0 { b.out as f64 / b.n as f64 } else { 0.0 };
+    let avg_lat_a = if a.n > 0 {
+        a.lat_sum as f64 / a.n as f64
+    } else {
+        0.0
+    };
+    let avg_lat_b = if b.n > 0 {
+        b.lat_sum as f64 / b.n as f64
+    } else {
+        0.0
+    };
+    let avg_in_a = if a.n > 0 {
+        a.r#in as f64 / a.n as f64
+    } else {
+        0.0
+    };
+    let avg_in_b = if b.n > 0 {
+        b.r#in as f64 / b.n as f64
+    } else {
+        0.0
+    };
+    let avg_out_a = if a.n > 0 {
+        a.out as f64 / a.n as f64
+    } else {
+        0.0
+    };
+    let avg_out_b = if b.n > 0 {
+        b.out as f64 / b.n as f64
+    } else {
+        0.0
+    };
     let p99_a = percentile(&mut a.lats.clone(), 99.0);
     let p99_b = percentile(&mut b.lats.clone(), 99.0);
-    let ratio_a = if a.r#in > 0 { a.out as f64 / a.r#in as f64 } else { 0.0 };
-    let ratio_b = if b.r#in > 0 { b.out as f64 / b.r#in as f64 } else { 0.0 };
+    let ratio_a = if a.r#in > 0 {
+        a.out as f64 / a.r#in as f64
+    } else {
+        0.0
+    };
+    let ratio_b = if b.r#in > 0 {
+        b.out as f64 / b.r#in as f64
+    } else {
+        0.0
+    };
 
     let rows: Vec<(&str, String, String, (String, fn(&str) -> String))> = vec![
-        ("bot score", format!("{}/100", bot_a), format!("{}/100", bot_b), delta(bot_a as f64, bot_b as f64, true)),
-        ("driver",    format!("{}/100", drv_a), format!("{}/100", drv_b), delta(drv_a as f64, drv_b as f64, true)),
-        ("requests",  a.n.to_string(),          b.n.to_string(),          delta(a.n as f64, b.n as f64, false)),
-        ("total tok", fmt_n(a.tot),             fmt_n(b.tot),             delta(a.tot as f64, b.tot as f64, false)),
-        ("avg in",    fmt_n(avg_in_a as u64),   fmt_n(avg_in_b as u64),   delta(avg_in_a, avg_in_b, true)),
-        ("avg out",   fmt_n(avg_out_a as u64),  fmt_n(avg_out_b as u64),  delta(avg_out_a, avg_out_b, false)),
-        ("avg lat",   format!("{}ms", avg_lat_a as u64), format!("{}ms", avg_lat_b as u64), delta(avg_lat_a, avg_lat_b, true)),
-        ("p99 lat",   format!("{}ms", p99_a as u64),     format!("{}ms", p99_b as u64),     delta(p99_a, p99_b, true)),
-        ("out/in",    format!("{:.2}", ratio_a), format!("{:.2}", ratio_b), delta(ratio_a, ratio_b, false)),
-        ("sessions",  a.sessions.len().to_string(), b.sessions.len().to_string(), delta(a.sessions.len() as f64, b.sessions.len() as f64, false)),
+        (
+            "bot score",
+            format!("{}/100", bot_a),
+            format!("{}/100", bot_b),
+            delta(bot_a as f64, bot_b as f64, true),
+        ),
+        (
+            "driver",
+            format!("{}/100", drv_a),
+            format!("{}/100", drv_b),
+            delta(drv_a as f64, drv_b as f64, true),
+        ),
+        (
+            "requests",
+            a.n.to_string(),
+            b.n.to_string(),
+            delta(a.n as f64, b.n as f64, false),
+        ),
+        (
+            "total tok",
+            fmt_n(a.tot),
+            fmt_n(b.tot),
+            delta(a.tot as f64, b.tot as f64, false),
+        ),
+        (
+            "avg in",
+            fmt_n(avg_in_a as u64),
+            fmt_n(avg_in_b as u64),
+            delta(avg_in_a, avg_in_b, true),
+        ),
+        (
+            "avg out",
+            fmt_n(avg_out_a as u64),
+            fmt_n(avg_out_b as u64),
+            delta(avg_out_a, avg_out_b, false),
+        ),
+        (
+            "avg lat",
+            format!("{}ms", avg_lat_a as u64),
+            format!("{}ms", avg_lat_b as u64),
+            delta(avg_lat_a, avg_lat_b, true),
+        ),
+        (
+            "p99 lat",
+            format!("{}ms", p99_a as u64),
+            format!("{}ms", p99_b as u64),
+            delta(p99_a, p99_b, true),
+        ),
+        (
+            "out/in",
+            format!("{:.2}", ratio_a),
+            format!("{:.2}", ratio_b),
+            delta(ratio_a, ratio_b, false),
+        ),
+        (
+            "sessions",
+            a.sessions.len().to_string(),
+            b.sessions.len().to_string(),
+            delta(a.sessions.len() as f64, b.sessions.len() as f64, false),
+        ),
     ];
 
     println!();
@@ -61,17 +143,14 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("  {}", grey(&"─".repeat(64)));
     for (label, va, vb, (d, col)) in rows {
-        println!(
-            "  {:12} {:>14}  {:>14}    {}",
-            label, va, vb, col(&d)
-        );
+        println!("  {:12} {:>14}  {:>14}    {}", label, va, vb, col(&d));
     }
 
-    if let Some(diag) = diagnosis(bot_a as u32, drv_a as u32) {
+    if let Some(diag) = diagnosis(&score_breakdown(&a, &baseline)) {
         println!();
         println!("  {:>14}  {} {}", ra.label, grey("↳"), subtle(diag));
     }
-    if let Some(diag) = diagnosis(bot_b as u32, drv_b as u32) {
+    if let Some(diag) = diagnosis(&score_breakdown(&b, &baseline)) {
         println!("  {:>14}  {} {}", rb.label, grey("↳"), subtle(diag));
     }
 
@@ -114,7 +193,11 @@ fn delta(av: f64, bv: f64, lower_is_better: bool) -> (String, fn(&str) -> String
     }
     let pct = (av - bv) / bv * 100.0;
     let sign = if pct >= 0.0 { "+" } else { "" };
-    let good = if lower_is_better { pct < 0.0 } else { pct > 0.0 };
+    let good = if lower_is_better {
+        pct < 0.0
+    } else {
+        pct > 0.0
+    };
     let col: fn(&str) -> String = if good {
         green
     } else if pct.abs() > 5.0 {

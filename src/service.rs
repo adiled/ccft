@@ -1,83 +1,46 @@
-//! Cross-platform user-mode service registration.
-//!
 //! Wraps each platform's "run this binary at login, restart on exit" mechanism
-//! behind one API:
-//!
-//!   - macOS:   launchd (~/Library/LaunchAgents/<label>.plist + launchctl)
-//!   - Linux:   systemd-user (~/.config/systemd/user/<label>.service + systemctl --user)
-//!   - Windows: not implemented — install copies the binary; service mode is
-//!              a no-op (run `ccft run` manually or wrap with NSSM/sc.exe).
-//!
-//! The `<label>` defaults to `com.ccft` but can be overridden per install
-//! with `ccft install --label com.mycompany.proxy` (persisted to config) or
-//! at runtime via the `CCFT_LABEL` env var. The same label is used across
-//! platforms so messages / logs read consistently.
 
 use crate::config::Config;
 use std::path::{Path, PathBuf};
 
-/// Resolve the service label to use right now. Order of precedence:
-///   1. `CCFT_LABEL` env var (testing / one-off override)
-///   2. `service_label` from the loaded config
-///   3. `DEFAULT_SERVICE_LABEL` ("com.ccft")
 pub fn label() -> String {
-    if let Some(v) = std::env::var_os("CCFT_LABEL") {
-        let s = v.to_string_lossy().trim().to_string();
-        if !s.is_empty() {
-            return s;
-        }
-    }
     Config::load().service_label
 }
 
-/// Human-readable name kept for log/status messages where context is the
-/// installed service in general rather than a specific label.
 pub const PRODUCT_NAME: &str = "ccft";
 
-/// Where the unit/plist file lives on this platform.
 pub fn unit_path() -> PathBuf {
     platform::unit_path()
 }
 
-/// Write the unit/plist file pointing at the installed binary. Idempotent.
 pub fn write_unit(bin: &Path) -> Result<(), Box<dyn std::error::Error>> {
     platform::write_unit(bin)
 }
 
-/// Register with the platform's service manager so the daemon auto-starts.
 pub fn register() -> Result<(), Box<dyn std::error::Error>> {
     platform::register()
 }
 
-/// Unregister from the service manager. Idempotent — silent if not registered.
 pub fn unregister() -> Result<(), Box<dyn std::error::Error>> {
     platform::unregister()
 }
 
-/// Kick the daemon (start, or restart if already running).
 pub fn kickstart() -> Result<(), Box<dyn std::error::Error>> {
     platform::kickstart()
 }
 
-/// Stop the daemon. The unit stays registered — on next login the service
-/// manager will respawn it. To remove permanently use `unregister`.
 pub fn bootout() -> Result<(), Box<dyn std::error::Error>> {
     platform::bootout()
 }
 
-/// Is the unit registered with the service manager (i.e., would it auto-start
-/// at next login)?
 pub fn is_registered() -> bool {
     platform::is_registered()
 }
 
-/// Does this platform support automatic service registration? (False on
-/// Windows for now.)
 pub fn supported() -> bool {
     platform::SUPPORTED
 }
 
-/// Human-readable name of the service manager — used in status messages.
 pub fn manager_name() -> &'static str {
     platform::MANAGER_NAME
 }
@@ -109,10 +72,6 @@ mod platform {
     pub fn write_unit(bin: &Path) -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(unit_dir())?;
         let log = paths::launchd_log();
-        // In dev mode the unit must launch the binary in parallel-dev mode,
-        // otherwise `ccft run` falls back to the production config (port
-        // 7178) and collides with the main install. launchd does not inherit
-        // the shell env, so bake CCFT_DEV into the plist's environment.
         let env_block = if paths::is_dev() {
             "    <key>EnvironmentVariables</key>\n    <dict>\n        <key>CCFT_DEV</key>\n        <string>1</string>\n    </dict>\n"
         } else {
@@ -148,9 +107,8 @@ mod platform {
 
     pub fn register() -> Result<(), Box<dyn std::error::Error>> {
         if paths::is_isolated() {
-            return Ok(()); // CCFT_PREFIX-isolated test: skip launchctl
+            return Ok(());
         }
-        // Bootout first so an old definition can't get in the way.
         let _ = bootout();
         let target = launchctl_user_target();
         let status = Command::new("launchctl")
@@ -185,7 +143,6 @@ mod platform {
 
     pub fn bootout() -> Result<(), Box<dyn std::error::Error>> {
         let target = format!("{}/{}", launchctl_user_target(), super::label());
-        // Idempotent: silence stderr ("Boot-out failed: 3: No such process").
         let _ = Command::new("launchctl")
             .args(["bootout", &target])
             .stderr(std::process::Stdio::null())
@@ -244,8 +201,6 @@ mod platform {
 
     pub fn write_unit(bin: &Path) -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(unit_dir())?;
-        // In dev mode set CCFT_DEV in the unit environment so `ccft run`
-        // loads dev.json (port 7179) instead of the production config.
         let env_line = if paths::is_dev() {
             "Environment=CCFT_DEV=1\n"
         } else {
@@ -361,9 +316,7 @@ mod platform {
     }
 
     pub fn register() -> Result<(), Box<dyn std::error::Error>> {
-        eprintln!(
-            "Note: ccft service auto-start is not yet implemented on Windows."
-        );
+        eprintln!("Note: ccft service auto-start is not yet implemented on Windows.");
         eprintln!("      Run `ccft run` manually, or wrap with NSSM / sc.exe.");
         Ok(())
     }

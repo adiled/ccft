@@ -118,10 +118,7 @@ fn perf_lines(app: &App) -> Vec<Line<'static>> {
         Span::styled("  records   ", style::label()),
         Span::styled(n_total.to_string(), style::value()),
         Span::styled("  ·  ", style::dim()),
-        Span::styled(
-            format!("{} with ccft timing", n_with_ccft),
-            style::dim(),
-        ),
+        Span::styled(format!("{} with ccft timing", n_with_ccft), style::dim()),
         Span::styled("  ·  ", style::dim()),
         Span::styled("wall = upstream + pre", style::dim()),
     ]));
@@ -140,12 +137,7 @@ fn perf_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-fn perf_row(
-    name: &str,
-    values: &[u64],
-    fmt: fn(f64) -> String,
-    dim: bool,
-) -> Line<'static> {
+fn perf_row(name: &str, values: &[u64], fmt: fn(f64) -> String, dim: bool) -> Line<'static> {
     let mut owned: Vec<u64> = values.to_vec();
     let p50 = percentile(&mut owned, 50.0);
     let p95 = percentile(&mut owned, 95.0);
@@ -162,7 +154,11 @@ fn perf_row(
     ])
 }
 
-fn perf_verdict(ccft_p50_us: f64, wall_p50_ms: f64, coverage_pct: f64) -> (ratatui::style::Color, String) {
+fn perf_verdict(
+    ccft_p50_us: f64,
+    wall_p50_ms: f64,
+    coverage_pct: f64,
+) -> (ratatui::style::Color, String) {
     let ccft_ms = ccft_p50_us / 1000.0;
     let rel = if wall_p50_ms > 0.0 {
         ccft_ms / wall_p50_ms * 100.0
@@ -288,8 +284,10 @@ fn sessions_lines(app: &App) -> Vec<Line<'static>> {
             Span::styled(format!("  {:10}", sid_short), style::label()),
             Span::styled(format!("  {:>4}", s.n), style::value()),
             Span::styled(format!("  {:>8}", short_n(s.tot)), style::value()),
-            Span::styled(format!("   {:>6}", style::fmt_lat(avg_lat)),
-                Style::default().fg(style::heat_color(avg_lat as f64))),
+            Span::styled(
+                format!("   {:>6}", style::fmt_lat(avg_lat)),
+                Style::default().fg(style::heat_color(avg_lat as f64)),
+            ),
             Span::styled(format!("  {:>7}", span), style::label()),
             Span::styled(format!("  {}", top_model), style::dim()),
         ]));
@@ -309,10 +307,7 @@ fn help_lines() -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  t y h w W a  ", style::key_hint()),
-            Span::styled(
-                "today / yday / 24h / 7d / this-week / all",
-                style::label(),
-            ),
+            Span::styled("today / yday / 24h / 7d / this-week / all", style::label()),
         ]),
         Line::from(""),
         Line::from(Span::styled("Drill overlays", style::title())),
@@ -414,5 +409,10 @@ fn centered(area: Rect, pct_w: u16, pct_h: u16) -> Rect {
     let h = area.height * pct_h / 100;
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect { x, y, width: w, height: h }
+    Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
 }

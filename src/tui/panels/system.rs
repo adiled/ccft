@@ -46,7 +46,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(app.agg.sessions.len().to_string(), style::label()),
             Span::raw(" "),
             Span::styled(
-                if app.agg.sessions.len() == 1 { "session" } else { "sessions" },
+                if app.agg.sessions.len() == 1 {
+                    "session"
+                } else {
+                    "sessions"
+                },
                 style::dim(),
             ),
         ]),

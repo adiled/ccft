@@ -44,9 +44,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .max()
         .unwrap_or(1) as u16;
     // Reserve label_w + 1 space + count_w + 1 space; the rest is bar.
-    let bar_w = inner
-        .width
-        .saturating_sub(label_w + count_w + 2);
+    let bar_w = inner.width.saturating_sub(label_w + count_w + 2);
     if bar_w < 4 {
         return;
     }
@@ -60,8 +58,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             let label_padded = pad_left(&b.label, label_w);
             let fill_cells = ((b.count as f64 / max_n as f64) * bar_w as f64).round() as u16;
             let fill_cells = fill_cells.min(bar_w);
-            let bar = "█".repeat(fill_cells as usize)
-                + &"·".repeat((bar_w - fill_cells) as usize);
+            let bar = "█".repeat(fill_cells as usize) + &"·".repeat((bar_w - fill_cells) as usize);
             let bar_color = if b.count == 0 {
                 style::GREY
             } else {
@@ -187,9 +184,7 @@ fn build_chronological_day_buckets(
     let now_dt = time::OffsetDateTime::from_unix_timestamp(now as i64)
         .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
         .to_offset(local);
-    let today_midnight = now_dt
-        .replace_time(time::Time::MIDNIGHT)
-        .unix_timestamp() as f64;
+    let today_midnight = now_dt.replace_time(time::Time::MIDNIGHT).unix_timestamp() as f64;
 
     (0..n)
         .map(|i| {
@@ -228,9 +223,7 @@ fn build_rolling_7d_buckets(app: &crate::tui::App, local: time::UtcOffset) -> Ve
     let now_dt = time::OffsetDateTime::from_unix_timestamp(now as i64)
         .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
         .to_offset(local);
-    let today_midnight = now_dt
-        .replace_time(time::Time::MIDNIGHT)
-        .unix_timestamp() as f64;
+    let today_midnight = now_dt.replace_time(time::Time::MIDNIGHT).unix_timestamp() as f64;
     let dow_short = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
     (0..7)

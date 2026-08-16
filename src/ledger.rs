@@ -1,30 +1,3 @@
-//! Ledger writer — appends one JSONL record per /v1/messages response.
-//! Schema mirrors cc-flytrap/ledger.py with two additions:
-//!
-//!   { ts, te, dt, human, agent, sid, cip, pip, sip, ep, reg, model,
-//!     in, out, tot, lat, cr, cc, c_us, u_ch, tr_ch, th_ch, lxd, fnw, nge }
-//!
-//! `u_ch`/`tr_ch` are the char counts of the LAST user message in the
-//! request body, split by content type:
-//!   * u_ch  — chars when the message is plain text (fresh human input)
-//!   * tr_ch — chars when the message is a tool_result (bot continuation)
-//! `th_ch` is the LLM's own hidden-reasoning chars captured this turn
-//! (OpenAI `reasoning_content` / Anthropic `thinking`) — always bot machinery.
-//! `lxd`/`fnw`/`nge` are lexical stats (type-token ratio, function-word
-//! fraction, bigram entropy) of the counted user text — a second,
-//! content-free "wordology" axis for detecting bot-driven prompting.
-//! `nvt` is the cross-turn momentum axis: how much of the text's content
-//! bigrams were already seen earlier in the session (template reuse ⇒ a
-//! bot driving the prompt). Computed against an in-memory per-session set;
-//! only the fraction is persisted, never the bigrams themselves.
-//! Old records lacking these fields default to 0 on read; the driver
-//! score function refuses to compute against an empty u_ch baseline.
-//!
-//! Path: ~/.local/share/ccft/ledger.jsonl, override via $CCFT_LEDGER.
-//! State path: ledger.jsonl's parent / state.jsonl.
-//!
-//! Public IP fetched once and cached for an hour.
-
 use once_cell::sync::Lazy;
 use serde_json::json;
 use std::io::Write;
@@ -35,7 +8,6 @@ use tracing::warn;
 
 pub static AGENT_ID: Lazy<String> = Lazy::new(|| {
     let host = gethostname::gethostname().to_string_lossy().to_string();
-    // 8 hex chars from current nanos; cheap, unique-enough per process.
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -44,15 +16,13 @@ pub static AGENT_ID: Lazy<String> = Lazy::new(|| {
     format!("{host}-{suffix}")
 });
 
-pub static HUMAN: Lazy<String> = Lazy::new(|| {
-    std::env::var("USER").unwrap_or_else(|_| "unknown".into())
-});
+pub static HUMAN: Lazy<String> =
+    Lazy::new(|| std::env::var("USER").unwrap_or_else(|_| "unknown".into()));
 
 static PUBLIC_IP: Lazy<Mutex<Option<(String, Instant)>>> = Lazy::new(|| Mutex::new(None));
 
 const PUBLIC_IP_TTL: Duration = Duration::from_secs(3600);
 
-/// Best-effort, blocking, ~5s timeout. Caches result for one hour.
 pub fn public_ip() -> Option<String> {
     {
         let guard = PUBLIC_IP.lock().ok()?;
@@ -77,10 +47,8 @@ fn fetch_public_ip() -> Option<String> {
     )
     .ok()?;
     sock.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
-    sock.write_all(
-        b"GET / HTTP/1.0\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n",
-    )
-    .ok()?;
+    sock.write_all(b"GET / HTTP/1.0\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n")
+        .ok()?;
     let mut buf = String::new();
     sock.read_to_string(&mut buf).ok()?;
     let body = buf.split("\r\n\r\n").nth(1)?.trim();
@@ -107,9 +75,6 @@ pub struct LedgerRecord<'a> {
     pub client_ip: Option<&'a str>,
     pub server_ip: Option<&'a str>,
     pub region: Option<&'a str>,
-    /// OpenAI response `id` / Anthropic message `id` — a continuation handle
-    /// for chaining turns without persisting message history. The next
-    /// request's `previous_response_id` should equal this.
     pub reference: Option<&'a str>,
     pub model: Option<&'a str>,
     pub input_tokens: u64,
@@ -118,28 +83,12 @@ pub struct LedgerRecord<'a> {
     pub cache_read: u64,
     pub cache_creation: u64,
     pub ccft_us: u64,
-    /// Chars in the LAST user message of the request, when that message is
-    /// plain text (fresh human input). 0 when last user message is a
-    /// tool_result. See driver-kinetics scoring in brainrot/aggregate.rs.
     pub user_text_chars: u64,
-    /// Chars in the LAST user message when it's a tool_result (bot-loop
-    /// continuation feedback). Counterpart to user_text_chars.
     pub tool_result_chars: u64,
-    /// Chars of the LLM's own hidden reasoning captured this turn (OpenAI
-    /// `reasoning_content` / Anthropic `thinking`). Always bot machinery.
     pub thinking_chars: u64,
-    /// Type-token ratio of the counted user text (lexical-diversity axis).
-    /// 0.0 when absent/too-short — see the wordology classifier in
-    /// brainrot/aggregate.rs.
     pub lex_div: f64,
-    /// Function-word fraction of the counted user text.
     pub fn_word_frac: f64,
-    /// Bigram Shannon entropy of the counted user text (repetition axis).
     pub ngram_entropy: f64,
-    /// Cross-turn novelty fraction (0..1) of the counted user text: how much
-    /// of its content bigrams were already seen earlier in the session.
-    /// High = template reuse ⇒ a bot driving the prompt; low = novel ⇒ human.
-    /// 0.0 = no signal (no session / too short / older schema).
     pub novelty: f64,
 }
 
@@ -218,15 +167,10 @@ fn append_line(path: &std::path::Path, line: &str) -> std::io::Result<()> {
 }
 
 fn format_local_dt(epoch_secs: f64) -> String {
-    // UTC formatting. cc-flytrap.py used local time, but Python's local-time
-    // tripped users with timezone-confused dashboards (-6h drift was reported).
-    // UTC is unambiguous; downstream tools can re-localize.
     let secs = epoch_secs as i64;
-    let dt = time::OffsetDateTime::from_unix_timestamp(secs)
-        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
-    let fmt = time::format_description::parse(
-        "[year]-[month]-[day] [hour]:[minute]:[second]",
-    )
-    .expect("valid format");
+    let dt =
+        time::OffsetDateTime::from_unix_timestamp(secs).unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    let fmt = time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
+        .expect("valid format");
     dt.format(&fmt).unwrap_or_default()
 }

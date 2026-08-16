@@ -1,13 +1,9 @@
-//! DIAGNOSIS — vibe + split + peaks + models. The center-column heavyweight.
-//!
-//! Combines the legacy `brainrot split` summary into the diagnosis pane so
-//! driver/bot dynamics live alongside the vibe label and operational notes.
-//! Text deliberately clustered in the upper-left of the panel; the rest is
-//! intentional negative space — diagnostics dominates by what it doesn't
-//! fill, not by what it shows.
+//! Diagnosis panel — vibe + split + peaks + models. Center-column display.
+//! Driver/bot dynamics alongside vibe label and operational notes.
 
 use crate::brainrot::aggregate::{
-    bot_score, classify_turns_prob, diagnosis, driver_score, short_model, vibe_label, TurnKind,
+    classify_turns_prob, diagnosis, score_breakdown, short_model, split_summary, vibe_label,
+    TurnKind,
 };
 use crate::tui::style;
 use crate::tui::App;
@@ -18,8 +14,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::collections::HashMap;
 
-/// Bold + a hue. Used for section labels so they read like the CLI's
-/// `▶ section` headers — readable at a glance, hue-coded by content.
+/// Bold + hue for section labels.
 fn section_label(text: &str, hue: ratatui::style::Color) -> Span<'_> {
     Span::styled(
         text.to_string(),
@@ -29,7 +24,12 @@ fn section_label(text: &str, hue: ratatui::style::Color) -> Span<'_> {
 
 /// White + bold for numerical "headline" values (counts, percentages).
 fn num(text: String) -> Span<'static> {
-    Span::styled(text, Style::default().fg(style::WHITE).add_modifier(Modifier::BOLD))
+    Span::styled(
+        text,
+        Style::default()
+            .fg(style::WHITE)
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 /// Cyan for general data values that aren't headline numbers (durations,
@@ -42,7 +42,9 @@ fn data(text: String) -> Span<'static> {
 fn note(text: String) -> Span<'static> {
     Span::styled(
         text,
-        Style::default().fg(style::SUBTLE).add_modifier(Modifier::ITALIC),
+        Style::default()
+            .fg(style::SUBTLE)
+            .add_modifier(Modifier::ITALIC),
     )
 }
 
@@ -59,13 +61,14 @@ fn connector(text: String) -> Span<'static> {
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let inner = style::panel(f, area, "diagnosis");
 
-    let bot = bot_score(&app.agg, &app.baseline);
-    let drv = driver_score(&app.agg, &app.baseline);
+    let bd = score_breakdown(&app.agg, &app.baseline);
+    let bot = bd.b_shrunk as u32;
+    let drv = bd.d_shrunk as u32;
     let mut lines: Vec<Line> = Vec::new();
 
     // ── vibe ────────────────────────────────────────────────────────────
     lines.push(Line::from(vec![
-        section_label("vibe   ", style::PINK),
+        section_label("vibe    ", style::PINK),
         Span::styled(
             format!("bot {}", vibe_label(bot)),
             Style::default()
@@ -82,7 +85,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     ]));
 
     // ── note ────────────────────────────────────────────────────────────
-    if let Some(d) = diagnosis(bot, drv) {
+    if let Some(d) = diagnosis(&bd) {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             section_label("note   ", style::GOLD),
@@ -93,33 +96,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // ── split summary (driver vs bot turns) ─────────────────────────────
     if let Some(s) = compute_split(app) {
         lines.push(Line::from(""));
-        let summary = if s.drv_n == 0 {
-            "no driver turns observed"
-        } else if s.bot_n == 0 {
-            "pure prompting — no tool loops"
-        } else if s.bot_pct >= 80.0 {
-            "bot-heavy — agent grinding through tool loops"
-        } else if s.bot_pct >= 60.0 {
-            "bot-leaning — agent doing more tool work than you're typing"
-        } else if s.drv_pct >= 80.0 {
-            "driver-heavy — lots of typing, agent doing little tool work"
-        } else if s.drv_pct >= 60.0 {
-            "driver-leaning — typing more than the agent is iterating"
-        } else {
-            "balanced — driver steers, agent acts"
-        };
-        // "split   23/77   5 drv  17 bot   ·  bot-heavy …"
+        let summary = split_summary(s.drv_pct, s.bot_pct, s.drv_n, s.bot_n);
+        // "split   23/77   5 drv  17 bot    ·  bot-heavy …"
         // Color the percentages by their owning side: driver=CYAN, bot=PINK.
         lines.push(Line::from(vec![
             section_label("split  ", style::CYAN),
             Span::styled(
                 format!("{}", s.drv_pct as u64),
-                Style::default().fg(style::CYAN).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(style::CYAN)
+                    .add_modifier(Modifier::BOLD),
             ),
             connector("/".to_string()),
             Span::styled(
                 format!("{}", s.bot_pct as u64),
-                Style::default().fg(style::PINK).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(style::PINK)
+                    .add_modifier(Modifier::BOLD),
             ),
             connector(format!("   {} drv  ", s.drv_n)),
             connector(format!("{} bot", s.bot_n)),
@@ -161,7 +154,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             sub_bits.push(connector("cache offload ".to_string()));
             sub_bits.push(Span::styled(
                 format!("{:.0}%", pct),
-                Style::default().fg(style::LIME).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(style::LIME)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
         if !sub_bits.is_empty() {

@@ -19,7 +19,7 @@
 | `host` | `"127.0.0.1"` | Bind address |
 | `port` | `7178` | Bind port |
 | `system_override` | `""` | Extra system block injected into every `/v1/messages`. Empty = skip injection. |
-| `pain` | `false` | `false` trims Claude Code's three large bloat blocks; `true` leaves them alone. (Only relevant to Claude Code traffic.) |
+| `pain` | `false` | `false` trims Claude Code's bloat blocks; `true` keeps them. Claude Code only. |
 | `ledger` | `true` | Write per-response JSONL records to `~/.local/share/ccft/ledger.jsonl`. |
 
 Config reload requires restart (`ccft restart`).
@@ -42,30 +42,11 @@ Each line in `~/.local/share/ccft/ledger.jsonl`:
 }
 ```
 
-`u_ch`/`tr_ch` are char counts of the DELTA (content new to this session —
-see delta inference below), split by content type: `u_ch` = plain text
-(fresh human input), `tr_ch` = a tool result (bot-loop continuation; OpenAI
-`role:"tool"` messages and Anthropic `tool_result` blocks). `th_ch` is the
-LLM's own hidden-reasoning chars captured this turn (OpenAI
-`reasoning_content` / Anthropic `thinking`) — always bot machinery.
-`lxd` (type-token ratio), `fnw` (function-word fraction) and `nge` (bigram
-entropy) are lexical stats of the counted user text — a content-free
-"wordology" axis fused into the bot/driver split classifier. `nvt` is the
-cross-turn momentum axis: how much of the text's content bigrams were
-already seen earlier in the session (template reuse ⇒ a bot driving the
-prompt). It's computed at the proxy against an in-memory per-session set;
-only the fraction is persisted, never the bigrams.
+`u_ch`/`tr_ch` = char counts of the delta (new content this session). `u_ch` = plain text; `tr_ch` = tool_result. `th_ch` = LLM reasoning/thinking chars. `lxd`/`fnw`/`nge` = lexical stats (TTR, function-word fraction, bigram entropy) for the wordology classifier. `nvt` = cross-turn novelty: content bigram reuse fraction (computed in-memory, only fraction persisted). Zero when absent/short — classifier treats as "no signal".
 
-**Delta inference (anti-leakage):** resend-all (full-conversation) APIs
-resend the entire history in every request. Only messages whose fingerprint
-is new to the session are attributed, so stale content is never re-counted
-turn to turn. Per-session fingerprint + bigram state is in-memory only,
-never persisted.
+Resend-all APIs (full-conversation) re-send history; only new-content is attributed. Per-session fingerprint + bigram state is in-memory, never persisted.
 
-All are `0.0`/`0` when text is absent or too short (older schema), which
-the classifier treats as "no signal".
-
-The TUI brainrot panel reads this file as-is.
+TUI brainrot panel reads this file directly.
 
 ## File layout
 

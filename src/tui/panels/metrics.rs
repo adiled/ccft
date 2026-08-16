@@ -48,7 +48,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     } else {
         (drv.to_string(), vibe_label(drv).to_string())
     };
-    let mut lats = app.agg.lats.clone();
+    let lats = app.agg.lats.clone();
     let p50 = percentile(&mut lats.clone(), 50.0) as u64;
     let lat_word = lat_tier_word(p50 as f64, &app.baseline);
     // Cache offload: of *all* input the model had to ingest, what fraction
@@ -57,7 +57,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // not just hit-rate within the cacheable portion.
     let total_input: u64 = app.agg.records.iter().map(|r| r.r#in + r.cr + r.cc).sum();
     let cache_read: u64 = app.agg.records.iter().map(|r| r.cr).sum();
-    let cache_pct = if total_input > 0 {
+    let _cache_pct = if total_input > 0 {
         cache_read as f64 / total_input as f64 * 100.0
     } else {
         0.0
@@ -85,7 +85,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         "DRIVER",
         &drv_value,
         &drv_sub,
-        if driver_bootstrapping { &[] } else { &series.driver },
+        if driver_bootstrapping {
+            &[]
+        } else {
+            &series.driver
+        },
         style::CYAN,
     );
     tile(
@@ -98,14 +102,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         style::GOLD,
     );
     let signal = compute_signal(&app.agg, &app.baseline);
+    let bucket = crate::brainrot::aggregate::sigma_bucket(signal.z);
     tile(
         f,
         cells[3],
         "SIGNAL",
-        signal.phrase,
+        &signal.phrase,
         &signal.value,
         &series.cache,
-        style::LIME,
+        style::signal_color(bucket),
     );
 }
 
@@ -199,11 +204,8 @@ fn tile(
     // with the sparkline row (need height >= 4).
     if h >= 4 {
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                sub.to_string(),
-                style::dim(),
-            )))
-            .alignment(Alignment::Center),
+            Paragraph::new(Line::from(Span::styled(sub.to_string(), style::dim())))
+                .alignment(Alignment::Center),
             Rect {
                 x: inner.x,
                 y: sub_y,
@@ -222,14 +224,7 @@ fn tile(
 
 // ─── Sparkline rendering ─────────────────────────────────────────────────────
 
-fn paint_sparkline(
-    buf: &mut Buffer,
-    x: u16,
-    y: u16,
-    width: u16,
-    series: &[f32],
-    hue: Color,
-) {
+fn paint_sparkline(buf: &mut Buffer, x: u16, y: u16, width: u16, series: &[f32], hue: Color) {
     const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let max_w = width as usize;
     for (i, &v) in series.iter().take(max_w).enumerate() {

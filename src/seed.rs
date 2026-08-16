@@ -1,23 +1,3 @@
-//! `ccft seed` — replace ledger contents for selected sessions using a
-//! coding agent's local session JSONLs. The `<harness>` selects which agent
-//! to read; only `claude-code` (from `~/.claude/projects/`) is supported
-//! today.
-//!
-//! Semantics: **session is the unit of replacement.** For each session the
-//! user selects (via `--session` or by date range with `--since/--until`):
-//!
-//!   1. Drop every existing ledger row for that session.
-//!   2. Insert one row per user→assistant pair found in the session JSONL,
-//!      with all fields the JSONL provides (sid, ts, te, model, in/out/cr/
-//!      cc, lat, u_ch, tr_ch). Network-side metadata (cip, pip, sip, c_us)
-//!      is left at defaults — that's data only the live proxy can know.
-//!
-//! All ledger rows for sessions NOT being seeded are preserved untouched.
-//! Final ledger is sorted chronologically by ts.
-//!
-//! Original ledger is always copied to `ledger.jsonl.bak.<unix-ts>` before
-//! any write. Honors `--dry-run`.
-
 use crate::ledger::ledger_path;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -36,9 +16,7 @@ pub struct Args {
 #[derive(Debug, Clone)]
 struct Turn {
     sid: String,
-    /// User message timestamp (request start).
     ts: f64,
-    /// Assistant response timestamp (request end). None if no response in JSONL.
     te: Option<f64>,
     u_ch: u64,
     tr_ch: u64,
@@ -69,7 +47,12 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let projects_dir = harness_projects_dir(&args.harness)?;
     if !projects_dir.exists() {
-        return Err(format!("no {} projects dir at {}", args.harness, projects_dir.display()).into());
+        return Err(format!(
+            "no {} projects dir at {}",
+            args.harness,
+            projects_dir.display()
+        )
+        .into());
     }
 
     let since = args.since.as_deref().map(parse_when).transpose()?;
@@ -79,15 +62,6 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let all_turns = collect_all_turns(&projects_dir, args.session.as_deref())?;
     println!("scanned {} turns total", all_turns.len());
 
-    // Pick which sessions to operate on:
-    //   --session SID:           that one session
-    //   --since/--until:         every session whose START date (earliest
-    //                            paired turn ts in that session) falls in
-    //                            the range. Per-turn filtering is the
-    //                            wrong granularity — a long-running
-    //                            session that began before the range but
-    //                            had turns in it would otherwise get half-
-    //                            replaced. Whole-session is the unit.
     let session_starts: HashMap<String, f64> = {
         let mut m: HashMap<String, f64> = HashMap::new();
         for t in &all_turns {
@@ -120,21 +94,18 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Group all paired turns by session, restricted to affected sessions.
-    // Lone user turns (no assistant response) are skipped — they don't
-    // correspond to a completed API request.
     let mut new_rows_by_session: HashMap<String, Vec<Turn>> = HashMap::new();
-    for t in all_turns.into_iter().filter(|t| t.te.is_some() && affected.contains(&t.sid)) {
-        new_rows_by_session.entry(t.sid.clone()).or_default().push(t);
+    for t in all_turns
+        .into_iter()
+        .filter(|t| t.te.is_some() && affected.contains(&t.sid))
+    {
+        new_rows_by_session
+            .entry(t.sid.clone())
+            .or_default()
+            .push(t);
     }
     let new_total: usize = new_rows_by_session.values().map(|v| v.len()).sum();
 
-    // SAFETY: never drop a session that has no replacement turns. A session
-    // can have ledger rows but an empty/title-only JSONL (e.g. cancelled
-    // sessions, sessions captured by ccft from non-`claude-code` clients).
-    // Without this guard, --since covering such a session destroys real
-    // data with nothing to replace it. Restrict the drop set to sessions
-    // we actually have replacement data for.
     let drop_set: HashSet<String> = new_rows_by_session.keys().cloned().collect();
     let preserved_no_jsonl: HashSet<String> = affected.difference(&drop_set).cloned().collect();
 
@@ -151,9 +122,16 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
     println!("plan:");
-    println!("  drop  {} existing ledger rows from {} sessions with replacement data", to_drop, drop_set.len());
+    println!(
+        "  drop  {} existing ledger rows from {} sessions with replacement data",
+        to_drop,
+        drop_set.len()
+    );
     println!("  write {} fresh rows from JSONL", new_total);
-    println!("  preserve {} unrelated rows untouched", raw_existing.len() - to_drop);
+    println!(
+        "  preserve {} unrelated rows untouched",
+        raw_existing.len() - to_drop
+    );
     if !preserved_no_jsonl.is_empty() {
         println!(
             "  skip   {} affected sessions whose JSONL has no paired turns (rows kept as-is)",
@@ -173,14 +151,11 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Backup
     let bak = lpath.with_extension(format!("jsonl.bak.{}", now_unix()));
     fs::copy(&lpath, &bak)?;
     println!();
     println!("backed up original to {}", bak.display());
 
-    // Build new ledger: keep unrelated rows verbatim, plus newly synthesized
-    // rows for affected sessions, then sort all by ts.
     let mut out_lines: Vec<String> = Vec::with_capacity(raw_existing.len() - to_drop + new_total);
     for raw in raw_existing {
         let drop = sid_of_raw(&raw)
@@ -210,7 +185,11 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     out.flush()?;
 
     println!();
-    println!("✓ wrote {} total rows to {}", out_lines.len(), lpath.display());
+    println!(
+        "✓ wrote {} total rows to {}",
+        out_lines.len(),
+        lpath.display()
+    );
     println!("  (backup retained at {})", bak.display());
     Ok(())
 }
@@ -238,12 +217,6 @@ fn ts_of_raw(raw: &str) -> Option<f64> {
     v.get("ts").and_then(|t| t.as_f64())
 }
 
-/// Walk every JSONL under `dir`, pair each user event with the next
-/// assistant event (in chronological order — events are NOT always
-/// written in ts order in the JSONL, e.g. when the agent logs the
-/// assistant response slightly before the corresponding user message
-/// hits disk). Emits one Turn per pair, plus trailing lone user events
-/// with te=None which the caller filters out.
 fn collect_all_turns(
     dir: &Path,
     only_sid: Option<&str>,
@@ -253,14 +226,15 @@ fn collect_all_turns(
         let Ok(f) = fs::File::open(p) else { return };
         let reader = BufReader::new(f);
 
-        // First pass: collect every (ts, kind, value) we care about.
         let mut events: Vec<(f64, String, Value)> = Vec::new();
         for line in reader.lines().map_while(Result::ok) {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
             let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
             if kind != "user" && kind != "assistant" {
                 continue;
@@ -278,18 +252,19 @@ fn collect_all_turns(
                 .get("timestamp")
                 .and_then(|t| t.as_str())
                 .and_then(parse_iso8601)
-            else { continue };
+            else {
+                continue;
+            };
             events.push((ts, kind.to_string(), v));
         }
 
-        // Sort by ts so user→assistant pairing is correct even when the
-        // file's line order doesn't match wall-clock order.
-        events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Second pass: pair user→next assistant within the same session.
         let mut pending_user: Option<Turn> = None;
         for (ts, kind, v) in events {
-            let sid = v.get("sessionId").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let sid = v
+                .get("sessionId")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
             match kind.as_str() {
                 "user" => {
                     if let Some(t) = pending_user.take() {
@@ -301,16 +276,20 @@ fn collect_all_turns(
                         sid,
                         ts,
                         te: None,
-                        u_ch, tr_ch,
+                        u_ch,
+                        tr_ch,
                         model: None,
-                        in_tok: 0, out_tok: 0, cr: 0, cc: 0,
+                        in_tok: 0,
+                        out_tok: 0,
+                        cr: 0,
+                        cc: 0,
                     });
                 }
                 "assistant" => {
-                    let Some(mut t) = pending_user.take() else { continue };
+                    let Some(mut t) = pending_user.take() else {
+                        continue;
+                    };
                     if t.sid != sid {
-                        // Cross-session interleave — push the user as orphan
-                        // and skip this assistant (it has no matching user).
                         all_turns.push(t);
                         continue;
                     }
@@ -321,10 +300,22 @@ fn collect_all_turns(
                         .and_then(|m| m.get("model"))
                         .and_then(|m| m.as_str())
                         .map(str::to_string);
-                    t.in_tok = usage.and_then(|u| u.get("input_tokens")).and_then(Value::as_u64).unwrap_or(0);
-                    t.out_tok = usage.and_then(|u| u.get("output_tokens")).and_then(Value::as_u64).unwrap_or(0);
-                    t.cr = usage.and_then(|u| u.get("cache_read_input_tokens")).and_then(Value::as_u64).unwrap_or(0);
-                    t.cc = usage.and_then(|u| u.get("cache_creation_input_tokens")).and_then(Value::as_u64).unwrap_or(0);
+                    t.in_tok = usage
+                        .and_then(|u| u.get("input_tokens"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    t.out_tok = usage
+                        .and_then(|u| u.get("output_tokens"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    t.cr = usage
+                        .and_then(|u| u.get("cache_read_input_tokens"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    t.cc = usage
+                        .and_then(|u| u.get("cache_creation_input_tokens"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
                     all_turns.push(t);
                 }
                 _ => {}
@@ -338,7 +329,9 @@ fn collect_all_turns(
 }
 
 fn walk_jsonl(dir: &Path, f: &mut dyn FnMut(&Path)) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_dir() {
@@ -349,20 +342,14 @@ fn walk_jsonl(dir: &Path, f: &mut dyn FnMut(&Path)) {
     }
 }
 
-/// Mirror of `handler.rs::extract_user_message_lex`. The JSONL stores the
-/// same message structure as the API request body; we re-implement here
-/// rather than share to keep the live request hot path free of any shared
-/// parsing module.
-///
-/// As of the system-reminder strip fix: `<system-*>...</system-*>` blocks
-/// injected by Claude Code's hooks are excluded from u_ch counts so the
-/// driver kinetics signal reflects what the user actually typed.
 fn count_user_chars(content: Option<&Value>) -> (u64, u64) {
     let Some(c) = content else { return (0, 0) };
     if let Some(s) = c.as_str() {
         return (count_user_text(s), 0);
     }
-    let Some(blocks) = c.as_array() else { return (0, 0) };
+    let Some(blocks) = c.as_array() else {
+        return (0, 0);
+    };
     let mut text = 0u64;
     let mut tool = 0u64;
     for b in blocks {
@@ -393,7 +380,9 @@ fn count_user_chars(content: Option<&Value>) -> (u64, u64) {
 }
 
 fn count_user_text(s: &str) -> u64 {
-    if s.trim_start().starts_with("This session is being continued from a previous conversation") {
+    if s.trim_start()
+        .starts_with("This session is being continued from a previous conversation")
+    {
         return 0;
     }
     strip_system_blocks(s).chars().count() as u64
@@ -459,7 +448,8 @@ fn synthesize_record_json(t: &Turn) -> String {
         "fnw": 0.0,
         "nge": 0.0,
         "nvt": 0.0,
-    }).to_string()
+    })
+    .to_string()
 }
 
 fn parse_iso8601(s: &str) -> Option<f64> {
@@ -482,14 +472,18 @@ fn parse_when(s: &str) -> Result<f64, Box<dyn std::error::Error>> {
 
 fn format_local_dt(ts: f64) -> String {
     let secs = ts as i64;
-    let dt = time::OffsetDateTime::from_unix_timestamp(secs)
-        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    let dt =
+        time::OffsetDateTime::from_unix_timestamp(secs).unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
     let local = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
     let dt = dt.to_offset(local);
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        dt.year(), u8::from(dt.month()), dt.day(),
-        dt.hour(), dt.minute(), dt.second()
+        dt.year(),
+        u8::from(dt.month()),
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second()
     )
 }
 

@@ -14,9 +14,7 @@ use std::sync::OnceLock;
 /// We resolve it ONCE at startup (single-threaded) and reuse forever.
 pub fn local_offset() -> time::UtcOffset {
     static V: OnceLock<time::UtcOffset> = OnceLock::new();
-    *V.get_or_init(|| {
-        time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC)
-    })
+    *V.get_or_init(|| time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC))
 }
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
@@ -49,6 +47,16 @@ pub const GREEN: Color = LIME;
 pub const YELLOW: Color = GOLD;
 pub const RED: Color = PINK;
 pub const GHOST: Color = GREY;
+
+/// Signal tile color by sigma-bucket severity.
+pub fn signal_color(bucket: u8) -> Color {
+    match bucket {
+        1 | 2 => LIME,
+        3 => GOLD,
+        4 => PINK,
+        _ => Color::Rgb(0xff, 0x44, 0x66),
+    }
+}
 
 pub fn title() -> Style {
     Style::default().fg(PINK).add_modifier(Modifier::BOLD)
@@ -226,7 +234,8 @@ pub fn panel(f: &mut Frame, area: Rect, label: &str) -> Rect {
             let prefix = "// ";
             let label_uc = label.to_uppercase();
             let pip_w = (prefix.chars().count() + label_uc.chars().count() + 2)
-                .min((area.x + area.width).saturating_sub(pip_x) as usize) as u16;
+                .min((area.x + area.width).saturating_sub(pip_x) as usize)
+                as u16;
             let title_rect = Rect {
                 x: pip_x,
                 y: area.y,
@@ -293,7 +302,6 @@ fn paint_panel_border(buf: &mut Buffer, area: Rect, seed: &str) {
 
     paint_cells_with_signal(buf, &cells, &hue, &luminance, &is_burst, seed);
 }
-
 
 // ─── Hue field ───────────────────────────────────────────────────────────────
 //
@@ -436,8 +444,7 @@ fn compute_perimeter_luminance(
         if !near_corner[i] {
             let dh = cell_hash(seed, x.wrapping_add(31), y.wrapping_add(37));
             let dead_static = (dh & 0xFFFF) as f32 / 0xFFFF as f32;
-            let dead_phase =
-                ((dh >> 16) & 0xFFFF) as f32 / 0xFFFF as f32 * std::f32::consts::TAU;
+            let dead_phase = ((dh >> 16) & 0xFFFF) as f32 / 0xFFFF as f32 * std::f32::consts::TAU;
             let dead_drift = (time_offset * 0.4 + dead_phase).sin() * 0.04;
             let dead_roll = (dead_static + dead_drift).clamp(0.0, 1.0);
 
@@ -448,8 +455,7 @@ fn compute_perimeter_luminance(
                 lum[i] = if intensity_roll < DEAD_DEEP_RATE {
                     DEAD_DEEP_MIN + intensity_detail * (DEAD_DEEP_MAX - DEAD_DEEP_MIN)
                 } else {
-                    DEAD_MODERATE_MIN
-                        + intensity_detail * (DEAD_MODERATE_MAX - DEAD_MODERATE_MIN)
+                    DEAD_MODERATE_MIN + intensity_detail * (DEAD_MODERATE_MAX - DEAD_MODERATE_MIN)
                 };
                 continue;
             }
@@ -520,8 +526,7 @@ fn compute_perimeter_luminance(
             } else {
                 (DEAD_ZONE_SHORT_MIN, DEAD_ZONE_SHORT_MAX)
             };
-            let length =
-                (lmin + (length_detail * (lmax - lmin + 1) as f32) as usize).min(lmax);
+            let length = (lmin + (length_detail * (lmax - lmin + 1) as f32) as usize).min(lmax);
 
             // Dim factor — weighted random, 70% moderate / 30% deep.
             let dh = cell_hash(seed, x.wrapping_add(3019), y.wrapping_add(3023));
@@ -531,8 +536,7 @@ fn compute_perimeter_luminance(
                 DEAD_ZONE_DIM_DEEP_MIN
                     + dim_detail * (DEAD_ZONE_DIM_DEEP_MAX - DEAD_ZONE_DIM_DEEP_MIN)
             } else {
-                DEAD_ZONE_DIM_MOD_MIN
-                    + dim_detail * (DEAD_ZONE_DIM_MOD_MAX - DEAD_ZONE_DIM_MOD_MIN)
+                DEAD_ZONE_DIM_MOD_MIN + dim_detail * (DEAD_ZONE_DIM_MOD_MAX - DEAD_ZONE_DIM_MOD_MIN)
             };
 
             lum[i] *= dim_factor;
@@ -543,7 +547,6 @@ fn compute_perimeter_luminance(
 
     (lum, is_burst)
 }
-
 
 // ─── Paint perimeter cells ───────────────────────────────────────────────────
 //
@@ -617,13 +620,18 @@ fn paint_cells_with_signal(
 
         // Burst's own hue (with the same temp jitter as the FG paint).
         let p = i as f32;
-        let temp_shift =
-            (p * std::f32::consts::TAU / 80.0 + p_temp_glow).sin() * 0.06;
+        let temp_shift = (p * std::f32::consts::TAU / 80.0 + p_temp_glow).sin() * 0.06;
         let h_self = (hue[i] + temp_shift).clamp(0.0, 1.0);
         let hue_color = lerp_rgb(NEON_MAGENTA, NEON_CYAN, h_self);
 
         // Distance-decayed tint amounts.
-        let band = [(0i32, 0.22f32), (-1, 0.12), (1, 0.12), (-2, 0.05), (2, 0.05)];
+        let band = [
+            (0i32, 0.22f32),
+            (-1, 0.12),
+            (1, 0.12),
+            (-2, 0.05),
+            (2, 0.05),
+        ];
         let (xi, yi, _) = cells[i];
         for (offset, amount) in band {
             let j = ((i as i32 + offset).rem_euclid(n as i32)) as usize;
@@ -642,8 +650,6 @@ fn paint_cells_with_signal(
     }
 }
 
-
-
 // ─── Phase 7: temporal phase offset ──────────────────────────────────────────
 
 use std::cell::Cell as StdCell;
@@ -661,7 +667,6 @@ pub fn set_time_offset(t: f32) {
 fn time_offset() -> f32 {
     TIME_OFFSET.with(|c| c.get())
 }
-
 
 /// Paint a rectangular signal-border around `area` — same thematics as
 /// the panel chrome. Used for the active range chip's outline and any
@@ -807,7 +812,10 @@ pub fn fmt_lat(ms: u64) -> String {
 /// different positions → different noise patterns; the same panel at the
 /// same position → same noise across redraws.
 fn panel_label_seed(_buf_area: Rect, panel_area: Rect) -> String {
-    format!("p{}-{}-{}-{}", panel_area.x, panel_area.y, panel_area.width, panel_area.height)
+    format!(
+        "p{}-{}-{}-{}",
+        panel_area.x, panel_area.y, panel_area.width, panel_area.height
+    )
 }
 
 fn fg(color: Color) -> Style {
