@@ -10,7 +10,7 @@ name = "ccft"
 path = "src/main.rs"
 
 [dependencies]
-hudsucker = { version = "0.24", default-features = false, features = ["rcgen-ca", "rustls-client", "decoder"] }
+hudsucker = { version = "0.25", default-features = false, features = ["rcgen-ca", "rustls-client", "decoder"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

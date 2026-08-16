@@ -28,8 +28,6 @@ pub struct Config {
     pub pain_enabled: bool,
     pub ledger_enabled: bool,
     pub highway_enabled: bool,
-    pub openai_enabled: bool,
-    pub openai_targets: Vec<String>,
     /// Reverse-DNS-style identifier used for the user-mode service unit:
     /// `<label>.plist` on macOS, `<label>.service` on Linux. Defaults to
     /// `com.ccft`. Override per-install via `ccft install --label …` or
@@ -46,8 +44,6 @@ impl Default for Config {
             pain_enabled: false,
             ledger_enabled: true,
             highway_enabled: true,
-            openai_enabled: true,
-            openai_targets: Vec::new(),
             // In dev mode the default service unit is com.ccft.dev so the
             // parallel dev system never collides with production.
             service_label: if paths::is_dev() {
@@ -111,20 +107,6 @@ impl Config {
         if let Some(b) = parsed.get("highway").and_then(Value::as_bool) {
             cfg.highway_enabled = b;
         }
-        if let Some(b) = parsed.get("openai").and_then(Value::as_bool) {
-            cfg.openai_enabled = b;
-        }
-        if let Some(arr) = parsed.get("openai_targets").and_then(Value::as_array) {
-            let mut targets = Vec::new();
-            for v in arr {
-                if let Some(s) = v.as_str() {
-                    if !s.trim().is_empty() {
-                        targets.push(s.trim().to_string());
-                    }
-                }
-            }
-            cfg.openai_targets = targets;
-        }
         if let Some(s) = parsed.get("service_label").and_then(Value::as_str) {
             if !s.trim().is_empty() {
                 cfg.service_label = s.trim().to_string();
@@ -132,7 +114,7 @@ impl Config {
         }
 
         info!(
-            "[ccft] config loaded ({}): host={} port={} pain={} ledger={} highway={} label={} override={}chars openai={} targets={}",
+             "[ccft] config loaded ({}): host={} port={} pain={} ledger={} highway={} label={} override={}chars",
             path.display(),
             cfg.host,
             cfg.port,
@@ -141,9 +123,7 @@ impl Config {
             cfg.highway_enabled,
             cfg.service_label,
             cfg.system_override.len(),
-            cfg.openai_enabled,
-            cfg.openai_targets.join(","),
-        );
+         );
         cfg
     }
 }

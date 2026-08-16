@@ -129,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Dev => {
             std::env::set_var("CCFT_DEV", "1");
             install::install(None)
-        }
+         }
         Cmd::Install { label } => install::install(label),
         Cmd::Uninstall => install::uninstall(),
         Cmd::Status => {
