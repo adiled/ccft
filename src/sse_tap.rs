@@ -45,6 +45,21 @@ impl<B> SseTap<B> {
         }
     }
 
+    /// Feed a fully-buffered response body and immediately finalize the
+    /// ledger. Used for non-streaming (`stream:false`) JSON responses, whose
+    /// Content-Length bodies don't signal EOF to the streaming `Body` wrapper
+    /// under keep-alive — so we drain them eagerly here instead.
+    pub fn tap_bytes(&mut self, bytes: &[u8]) {
+        debug!("[ccft] tap_bytes: {} bytes", bytes.len());
+        // Non-streaming bodies are a single JSON document. Do NOT run them
+        // through `ingest` — that treats each `\n` line as an SSE event and
+        // drains pretty-printed JSON newlines down to an empty buffer. Parse
+        // the whole body directly instead.
+        self.line_buf = String::from_utf8_lossy(bytes).into_owned();
+        self.parse_complete_body();
+        self.report();
+    }
+
     fn ingest(&mut self, chunk: &[u8]) {
         self.bytes_seen += chunk.len();
 
@@ -55,6 +70,50 @@ impl<B> SseTap<B> {
             let line = self.line_buf[..idx].trim_end_matches('\r').to_string();
             if let Some(rest) = line.strip_prefix("data: ") {
                 self.parse_event(rest);
+            }
+            // Drain the consumed line (including its `\n`) so the next
+            // poll never re-finds the same newline. Without this, a single
+            // buffered line is re-parsed forever and EOF never arrives.
+            self.line_buf.drain(..=idx);
+        }
+    }
+
+    /// Parse a whole (non-streaming) JSON response body that arrived without
+    /// `data: ` SSE framing — e.g. `stream:false` chat completions. Called on
+    /// EOF for any leftover buffered body that wasn't SSE lines.
+    fn parse_complete_body(&mut self) {
+        debug!("[ccft] parse_complete_body: line_buf={} bytes", self.line_buf.len());
+        let body = std::mem::take(&mut self.line_buf);
+        let body = body.trim();
+        if body.is_empty() {
+            return;
+        }
+        let d: Value = match serde_json::from_str(body) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(
+                    "[ccft] non-stream body not parseable ({}), ignoring: {}",
+                    self.meta.provider, e
+                );
+                return;
+            }
+        };
+
+        debug!("[ccft] parse_complete_body: {} bytes parsed", body.len());
+        if self.meta.provider == crate::handler::PROVIDER_OPENAI {
+            self.parse_openai_event(&d);
+        } else if let Some(msg) = d.get("message") {
+            if let Some(id) = msg.get("id").and_then(Value::as_str) {
+                self.ref_id = Some(id.to_string());
+            }
+            if let Some(model) = msg.get("model").and_then(Value::as_str) {
+                self.usage.model = Some(model.to_string());
+            }
+            if let Some(u) = msg.get("usage") {
+                self.usage.input_tokens += u_u64(u, "input_tokens");
+                self.usage.output_tokens += u_u64(u, "output_tokens");
+                self.usage.cache_read_input_tokens += u_u64(u, "cache_read_input_tokens");
+                self.usage.cache_creation_input_tokens += u_u64(u, "cache_creation_input_tokens");
             }
         }
     }
@@ -254,6 +313,8 @@ where
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(None) => {
+                debug!("[ccft][tap] EOF reached, parsing leftover body");
+                me.parse_complete_body();
                 me.report();
                 Poll::Ready(None)
             }

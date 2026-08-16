@@ -78,14 +78,14 @@ impl CcftHandler {
 fn classify_post(req: &Request<Body>) -> Option<&'static str> {
     if req.method() != hyper::Method::POST {
         return None;
-    }
+     }
     let path = req.uri().path();
-    if path.ends_with("/v1/messages") {
+    if path.ends_with("/v1/messages") || path.ends_with("/api/messages") {
         return Some(PROVIDER_ANTHROPIC);
-    }
-    if path.ends_with("/v1/chat/completions") {
+     }
+    if path.ends_with("/v1/chat/completions") || path.ends_with("/api/chat") {
         return Some(PROVIDER_OPENAI);
-    }
+     }
     None
 }
 
@@ -614,195 +614,227 @@ fn extract_previous_response_id(body: &[u8]) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-const FLYTRAP_HOSTS: &[&str] = &["api.anthropic.com"];
-
-fn should_flytrap_host(cfg: &Config, host: &str, port: u16) -> bool {
-    if FLYTRAP_HOSTS.contains(&host) {
-        return true;
+fn should_intercept(req: &Request<Body>, cfg: &Config) -> bool {
+    if !cfg.ledger_enabled {
+        return false;
     }
-    let authority = format!("{}:{}", host, port);
-    cfg.openai_targets.iter().any(|t| t == &authority)
+    classify_post(req).is_some()
 }
 
 impl HttpHandler for CcftHandler {
-    async fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> bool {
-        let host = req.uri().host().unwrap_or("");
-        let port = req.uri().port_u16().unwrap_or(443);
-        should_flytrap_host(&self.cfg, host, port)
+    fn handle_request(
+         &mut self,
+         _ctx: &HttpContext,
+        req: Request<Body>,
+     ) -> impl std::future::Future<Output = RequestOrResponse> + Send {
+        async move {
+            let Some(provider) = classify_post(&req) else {
+                return req.into();
+             };
+
+            let t0 = Instant::now();
+            let req = match decode_request(req) {
+                Ok(r) => r,
+                Err(_) => {
+                    return Response::builder()
+                         .status(500)
+                         .body(Body::empty())
+                         .unwrap()
+                         .into()
+                 }
+             };
+
+            let (parts, body) = req.into_parts();
+            let collected = match body.collect().await {
+                Ok(c) => c.to_bytes(),
+                Err(e) => {
+                    warn!("[ccft] body collect failed: {}", e);
+                    return Response::builder()
+                         .status(502)
+                         .body(Body::empty())
+                         .unwrap()
+                         .into();
+                 }
+             };
+
+            if provider == PROVIDER_OPENAI {
+                debug!(
+                     "[ccft][openai][raw-req] {} bytes: {}",
+                    collected.len(),
+                    String::from_utf8_lossy(&collected)
+                 );
+            }
+
+            let session_id = session::extract(&parts.headers, Some(&collected));
+            let (ux, to_merge, new_state) = match &session_id {
+                Some(sid) => {
+                    let lex = self.session_lex.get(sid);
+                    let fp = self.session_fp.get(sid);
+                    let d = extract_request_delta(
+                         &collected,
+                        lex.as_ref().map(|g| &**g),
+                        fp.as_ref().map(|g| &**g),
+                     );
+                     (d.0, d.1, d.2)
+                 }
+                None => extract_request_delta(&collected, None, None),
+             };
+            if let Some(sid) = &session_id {
+                if !to_merge.is_empty() {
+                    let mut mem = self.session_lex.entry(sid.clone()).or_default();
+                    for b in to_merge {
+                        mem.insert(b);
+                     }
+                    if mem.len() > SESSION_LEX_CAP {
+                        mem.clear();
+                     }
+                 }
+                if let Some(ns) = new_state {
+                    let mut mem = self.session_fp.entry(sid.clone()).or_default();
+                     *mem = ns;
+                    if mem.seen_text.len() > SESSION_FP_CAP {
+                        mem.seen_text.clear();
+                     }
+                 }
+            }
+
+            let reference = if provider == PROVIDER_OPENAI {
+                extract_previous_response_id(&collected)
+             } else {
+                None
+             };
+
+            let new_body = match provider {
+                PROVIDER_ANTHROPIC => mutate_messages_body(&collected, &self.cfg).unwrap_or(collected),
+                PROVIDER_OPENAI => mutate_openai_body(&collected, &self.cfg).unwrap_or(collected),
+                 _ => collected,
+             };
+
+            let _ = self.seq.fetch_add(1, Ordering::Relaxed);
+            let key = flow_key(&format!("{}", _ctx.client_addr), &parts.uri);
+            let meta = FlowMeta {
+                session_id,
+                started_wall: now_wall_secs(),
+                ccft_us_req: t0.elapsed().as_micros() as u64,
+                server_ip: None,
+                user_text_chars: ux.chars,
+                tool_result_chars: ux.tool_chars,
+                thinking_chars: ux.thinking_chars,
+                provider,
+                reference,
+                lex_div: ux.lex_div,
+                fn_word_frac: ux.fn_word_frac,
+                ngram_entropy: ux.ngram_entropy,
+                novelty: ux.novelty,
+             };
+            self.pending.entry(key).or_default().push(meta);
+
+            let mut new_req = Request::from_parts(parts, Body::from(new_body.clone()));
+            new_req
+                 .headers_mut()
+                 .insert(hyper::header::CONTENT_LENGTH, new_body.len().into());
+            new_req
+                 .headers_mut()
+                 .remove(hyper::header::CONTENT_ENCODING);
+
+            if self.cfg.highway_enabled {
+                if let Some(ua) = new_req.headers_mut().get("user-agent") {
+                    if let Ok(ua_str) = ua.to_str() {
+                        if ua_str.contains("sdk-cli") {
+                            let new_ua = ua_str.replace("sdk-cli", "cli");
+                            new_req
+                                 .headers_mut()
+                                 .insert("user-agent", new_ua.parse().unwrap());
+                         }
+                     }
+                 }
+            }
+
+            new_req.into()
+        }
     }
 
-    async fn handle_request(&mut self, ctx: &HttpContext, req: Request<Body>) -> RequestOrResponse {
-        let Some(provider) = classify_post(&req) else {
-            return req.into();
-        };
+    fn handle_response(
+         &mut self,
+         _ctx: &HttpContext,
+        res: Response<Body>,
+     ) -> impl std::future::Future<Output = Response<Body>> + Send {
+        async move {
+            if !self.cfg.ledger_enabled {
+                return res;
+             }
 
-        let t0 = Instant::now();
-        let req = match decode_request(req) {
-            Ok(r) => r,
-            Err(_) => {
-                return Response::builder()
-                    .status(500)
-                    .body(Body::empty())
-                    .unwrap()
-                    .into()
-            }
-        };
-
-        let (parts, body) = req.into_parts();
-        let collected = match body.collect().await {
-            Ok(c) => c.to_bytes(),
-            Err(e) => {
-                warn!("[ccft] body collect failed: {}", e);
-                return Response::builder()
-                    .status(502)
-                    .body(Body::empty())
-                    .unwrap()
-                    .into();
-            }
-        };
-
-        if provider == PROVIDER_OPENAI {
+            let ct = res
+                 .headers()
+                 .get(hyper::header::CONTENT_TYPE)
+                 .and_then(|v| v.to_str().ok())
+                 .unwrap_or("")
+                 .to_string();
             debug!(
-                "[ccft][openai][raw-req] {} bytes: {}",
-                collected.len(),
-                String::from_utf8_lossy(&collected)
-            );
-        }
+                 "[ccft] handle_response: client={} ct={} pending_entries={}",
+                 _ctx.client_addr,
+                 ct,
+                 self.pending.len()
+             );
 
-        let session_id = session::extract(&parts.headers, Some(&collected));
-        let (ux, to_merge, new_state) = match &session_id {
-            Some(sid) => {
-                let lex = self.session_lex.get(sid);
-                let fp = self.session_fp.get(sid);
-                let d = extract_request_delta(
-                    &collected,
-                    lex.as_ref().map(|g| &**g),
-                    fp.as_ref().map(|g| &**g),
-                );
-                (d.0, d.1, d.2)
-            }
-            None => extract_request_delta(&collected, None, None),
-        };
-        if let Some(sid) = &session_id {
-            if !to_merge.is_empty() {
-                let mut mem = self.session_lex.entry(sid.clone()).or_default();
-                for b in to_merge {
-                    mem.insert(b);
-                }
-                if mem.len() > SESSION_LEX_CAP {
-                    mem.clear();
-                }
-            }
-            if let Some(ns) = new_state {
-                let mut mem = self.session_fp.entry(sid.clone()).or_default();
-                *mem = ns;
-                if mem.seen_text.len() > SESSION_FP_CAP {
-                    mem.seen_text.clear();
-                }
-            }
-        }
+            let res = match decode_response(res) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("[ccft] decode_response failed: {}", e);
+                    return Response::builder().status(502).body(Body::empty()).unwrap();
+                 }
+            };
 
-        let reference = if provider == PROVIDER_OPENAI {
-            extract_previous_response_id(&collected)
-        } else {
-            None
-        };
+            let client_key_prefix = format!("{}", _ctx.client_addr);
+            let candidate = self
+                 .pending
+                 .iter()
+                 .find(|kv| kv.key().0 == client_key_prefix)
+                 .map(|kv| kv.key().clone());
 
-        let new_body = match provider {
-            PROVIDER_ANTHROPIC => mutate_messages_body(&collected, &self.cfg).unwrap_or(collected),
-            PROVIDER_OPENAI => mutate_openai_body(&collected, &self.cfg).unwrap_or(collected),
-            _ => collected,
-        };
+            let mut meta: Option<FlowMeta> = None;
+            if let Some(k) = candidate {
+                if let Some(mut q) = self.pending.get_mut(&k) {
+                    if !q.is_empty() {
+                        meta = Some(q.remove(0));
+                     }
+                 }
+                self.pending.remove_if(&k, |_, v| v.is_empty());
+             }
 
-        let _ = self.seq.fetch_add(1, Ordering::Relaxed);
-        let key = flow_key(&ctx.client_addr.to_string(), &parts.uri);
-        let meta = FlowMeta {
-            session_id,
-            started_wall: now_wall_secs(),
-            ccft_us_req: t0.elapsed().as_micros() as u64,
-            server_ip: None,
-            user_text_chars: ux.chars,
-            tool_result_chars: ux.tool_chars,
-            thinking_chars: ux.thinking_chars,
-            provider,
-            reference,
-            lex_div: ux.lex_div,
-            fn_word_frac: ux.fn_word_frac,
-            ngram_entropy: ux.ngram_entropy,
-            novelty: ux.novelty,
-        };
-        self.pending.entry(key).or_default().push(meta);
+            debug!(
+                 "[ccft] handle_response: client={} meta_found={} pending_entries={}",
+                 client_key_prefix,
+                 meta.is_some(),
+                 self.pending.len()
+             );
+            let Some(meta) = meta else {
+                return res;
+             };
 
-        let mut new_req = Request::from_parts(parts, Body::from(new_body.clone()));
-        new_req
-            .headers_mut()
-            .insert(hyper::header::CONTENT_LENGTH, new_body.len().into());
-        new_req
-            .headers_mut()
-            .remove(hyper::header::CONTENT_ENCODING);
+            let label = client_key_prefix;
+            let (parts, body) = res.into_parts();
 
-        if self.cfg.highway_enabled {
-            if let Some(ua) = new_req.headers_mut().get("user-agent") {
-                if let Ok(ua_str) = ua.to_str() {
-                    if ua_str.contains("sdk-cli") {
-                        let new_ua = ua_str.replace("sdk-cli", "cli");
-                        new_req
-                            .headers_mut()
-                            .insert("user-agent", new_ua.parse().unwrap());
-                    }
-                }
+            if ct.contains("text/event-stream") {
+                let tapped = SseTap::new(body, label, meta);
+                let stream = BodyDataStream::new(tapped);
+                Response::from_parts(parts, Body::from_stream(stream))
+            } else {
+                // Non-streaming (`stream:false`) JSON: drain the body eagerly
+                // so we can tap it and land the ledger immediately. Its
+                // Content-Length body never EOFs the streaming wrapper under
+                // keep-alive, so the streaming path would leave the ledger unwritten.
+                let bytes = body
+                     .collect()
+                     .await
+                     .map(|c| c.to_bytes())
+                     .unwrap_or_default();
+                debug!("[ccft] non-stream collected {} bytes", bytes.len());
+                let mut tapped = SseTap::new(Body::empty(), label, meta);
+                tapped.tap_bytes(&bytes);
+                Response::from_parts(parts, Body::from(bytes))
             }
         }
-
-        new_req.into()
-    }
-
-    async fn handle_response(&mut self, ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
-        let is_messages = res
-            .headers()
-            .get(hyper::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|ct| ct.contains("text/event-stream"))
-            .unwrap_or(false);
-
-        if !is_messages || !self.cfg.ledger_enabled {
-            return res;
-        }
-
-        let res = match decode_response(res) {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("[ccft] decode_response failed: {}", e);
-                return Response::builder().status(502).body(Body::empty()).unwrap();
-            }
-        };
-
-        let client_key_prefix = ctx.client_addr.to_string();
-        let candidate = self
-            .pending
-            .iter()
-            .find(|kv| kv.key().0 == client_key_prefix)
-            .map(|kv| kv.key().clone());
-
-        let mut meta: Option<FlowMeta> = None;
-        if let Some(k) = candidate {
-            if let Some(mut q) = self.pending.get_mut(&k) {
-                if !q.is_empty() {
-                    meta = Some(q.remove(0));
-                }
-            }
-            self.pending.remove_if(&k, |_, v| v.is_empty());
-        }
-
-        let Some(meta) = meta else {
-            return res;
-        };
-
-        let label = client_key_prefix;
-        let (parts, body) = res.into_parts();
-        let tapped = SseTap::new(body, label, meta);
-        let stream = BodyDataStream::new(tapped);
-        Response::from_parts(parts, Body::from_stream(stream))
     }
 }
 
