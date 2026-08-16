@@ -737,7 +737,7 @@ impl HttpHandler for CcftHandler {
                  .headers_mut()
                  .remove(hyper::header::CONTENT_ENCODING);
 
-            if self.cfg.highway_enabled {
+            if self.cfg.highway_enabled && provider == PROVIDER_ANTHROPIC {
                 if let Some(ua) = new_req.headers_mut().get("user-agent") {
                     if let Ok(ua_str) = ua.to_str() {
                         if ua_str.contains("sdk-cli") {
