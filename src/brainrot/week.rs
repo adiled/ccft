@@ -1,7 +1,9 @@
 //! 7-day rollup. Aggregates by day, plus day-of-week pattern and peak hour.
 
 use crate::brainrot::aggregate::*;
-use crate::ledger_read::{compute_coverage, iter_records, load_state_events, parse_range, percentile};
+use crate::ledger_read::{
+    compute_coverage, iter_records, load_state_events, parse_range, percentile,
+};
 use crate::theme::*;
 use std::collections::HashMap;
 
@@ -13,7 +15,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     header("brainrot", &range.label);
     if records.is_empty() {
         if cov.currently_off {
-            bullet(&red("⚠ ledger is OFF — no records being captured"));
+            bullet(&red("⚠ ledger is OFF, no records being captured"));
         } else {
             bullet(&dim("(no records this week)"));
         }
@@ -43,7 +45,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         grey("—"),
         vibe_label(drv)
     );
-    if let Some(d) = diagnosis(bot, drv) {
+    if let Some(d) = diagnosis(&score_breakdown(&a, &baseline)) {
         println!("        {} {}", grey("↳"), subtle(d));
     }
 
@@ -66,7 +68,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let dt = time::OffsetDateTime::from_unix_timestamp(r.ts as i64)
             .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
             .to_offset(local);
-        let day = format!("{:04}-{:02}-{:02}", dt.year(), u8::from(dt.month()), dt.day());
+        let day = format!(
+            "{:04}-{:02}-{:02}",
+            dt.year(),
+            u8::from(dt.month()),
+            dt.day()
+        );
         let bucket = by_day.entry(day).or_default();
         bucket.n += 1;
         bucket.tot += r.tot;
@@ -79,8 +86,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     section("daily");
     for (day, d) in &days {
-        let dt = time::Date::parse(day, &time::format_description::parse("[year]-[month]-[day]").unwrap())
-            .unwrap_or(time::Date::MIN);
+        let dt = time::Date::parse(
+            day,
+            &time::format_description::parse("[year]-[month]-[day]").unwrap(),
+        )
+        .unwrap_or(time::Date::MIN);
         let dow = match dt.weekday() {
             time::Weekday::Monday => "Mon",
             time::Weekday::Tuesday => "Tue",
@@ -137,10 +147,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             })
             .unwrap();
         section("peaks");
-        println!(
-            "    busiest hour:  {:02}:00  ({} reqs)",
-            peak.0, peak.1.n
-        );
+        println!("    busiest hour:  {:02}:00  ({} reqs)", peak.0, peak.1.n);
         let slow_avg = slow.1.lat_sum as f64 / slow.1.n.max(1) as f64;
         let slow_str = format!("{}ms avg", slow_avg as u64);
         println!(

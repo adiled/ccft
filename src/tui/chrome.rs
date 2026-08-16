@@ -51,10 +51,7 @@ pub fn header(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
     f.render_widget(Paragraph::new(left), layout[0]);
-    f.render_widget(
-        Paragraph::new(right).alignment(Alignment::Right),
-        layout[1],
-    );
+    f.render_widget(Paragraph::new(right).alignment(Alignment::Right), layout[1]);
 }
 
 pub fn keybar(f: &mut Frame, area: Rect, _app: &App) {
@@ -186,10 +183,15 @@ fn clock_now() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    let dt = time::OffsetDateTime::from_unix_timestamp(now)
-        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    let dt =
+        time::OffsetDateTime::from_unix_timestamp(now).unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
     let local = dt.to_offset(crate::tui::style::local_offset());
-    format!("{:02}:{:02}:{:02}", local.hour(), local.minute(), local.second())
+    format!(
+        "{:02}:{:02}:{:02}",
+        local.hour(),
+        local.minute(),
+        local.second()
+    )
 }
 
 fn launchd_pid_from_lsof(port: u16) -> u32 {

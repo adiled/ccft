@@ -56,9 +56,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let header_h: u16 = 1;
     let gap_h: u16 = 1;
     let xlabels_h: u16 = 1;
-    let chart_h = inner
-        .height
-        .saturating_sub(header_h + gap_h + xlabels_h);
+    let chart_h = inner.height.saturating_sub(header_h + gap_h + xlabels_h);
     let split = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -168,7 +166,11 @@ fn chart(f: &mut Frame, area: Rect, app: &App) {
     let mut by_bucket: Vec<Vec<Record>> = (0..bucket_count).map(|_| Vec::new()).collect();
     for r in &app.agg.records {
         let idx = ((r.ts - since) / bucket_s).floor() as i64;
-        let clamped = if idx < 0 { 0 } else { (idx as usize).min(bucket_count - 1) };
+        let clamped = if idx < 0 {
+            0
+        } else {
+            (idx as usize).min(bucket_count - 1)
+        };
         by_bucket[clamped].push(r.clone());
     }
 
@@ -185,7 +187,14 @@ fn chart(f: &mut Frame, area: Rect, app: &App) {
         //   has records, u_ch=0    → driver=0, bot computed
         //   has u_ch>0 but out=0   → bot no plot
         let (bot_val, drv_val): (Option<f64>, Option<f64>) = if bucket.is_empty() {
-            (Some(0.0), if driver_bootstrapping { None } else { Some(0.0) })
+            (
+                Some(0.0),
+                if driver_bootstrapping {
+                    None
+                } else {
+                    Some(0.0)
+                },
+            )
         } else {
             let u_ch_sum: u64 = bucket.iter().map(|r| r.u_ch).sum();
             let out_sum: u64 = bucket.iter().map(|r| r.out).sum();
@@ -217,8 +226,12 @@ fn chart(f: &mut Frame, area: Rect, app: &App) {
                 }
             }
             (b, d) => {
-                if let Some(v) = b { bot_pts.push((mid_ts, v)); }
-                if let Some(v) = d { drv_pts.push((mid_ts, v)); }
+                if let Some(v) = b {
+                    bot_pts.push((mid_ts, v));
+                }
+                if let Some(v) = d {
+                    drv_pts.push((mid_ts, v));
+                }
             }
         }
     }
@@ -370,11 +383,6 @@ fn axis_label(epoch: f64, span_secs: f64) -> String {
     } else if span_secs < 30.0 * 86400.0 {
         format!("{}/{:02}", u8::from(dt.month()), dt.day())
     } else {
-        format!(
-            "{}-{:02}-{:02}",
-            dt.year(),
-            u8::from(dt.month()),
-            dt.day()
-        )
+        format!("{}-{:02}-{:02}", dt.year(), u8::from(dt.month()), dt.day())
     }
 }

@@ -91,7 +91,12 @@ fn list_today() -> Result<(), Box<dyn std::error::Error>> {
 fn drill_in(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     let now = now_secs();
     let matched: Vec<Record> = iter_records(Some(0.0), Some(now))
-        .filter(|r| r.sid.as_deref().map(|s| s.starts_with(query)).unwrap_or(false))
+        .filter(|r| {
+            r.sid
+                .as_deref()
+                .map(|s| s.starts_with(query))
+                .unwrap_or(false)
+        })
         .collect();
     if matched.is_empty() {
         println!("\n  {}\n", dim(&format!("no session matching '{}'", query)));

@@ -235,7 +235,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // ratatui::run handles raw-mode + alt-screen + panic-hook + restore for us.
     // Our job is the event loop body.
-    let result: Result<(), Box<dyn std::error::Error>> = ratatui::run(|mut terminal| {
+    let result: Result<(), Box<dyn std::error::Error>> = ratatui::run(|terminal| {
         let mut app = App::new();
         let tick = Duration::from_millis(1000);
         loop {

@@ -1,14 +1,3 @@
-//! `ccft brainrot` — time-series vibe analyzer for the ledger.
-//!
-//! Subcommands:
-//!   today (default) — daily dashboard
-//!   score           — one-line bot/driver score
-//!   week            — 7d rollup     (TODO: stub)
-//!   replay          — animated      (TODO: stub)
-//!   diff A B        — compare       (TODO: stub)
-//!   session [sid]   — drill-in      (TODO: stub)
-//!   split           — bot/driver turn split  (TODO: stub)
-
 pub mod aggregate;
 mod debug_scores;
 mod diff;
@@ -38,7 +27,6 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", USAGE);
             Ok(())
         }
-        // Pass unknown subcommands through to today (treat as a range).
         _ => {
             let mut all = vec![sub.to_string()];
             all.extend(rest.iter().cloned());
@@ -48,7 +36,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 const USAGE: &str = "\
-ccft brainrot — time-series vibe analyzer
+ccft brainrot: time-series vibe analyzer
 
 usage: ccft brainrot [subcommand] [args]
 
@@ -56,7 +44,7 @@ usage: ccft brainrot [subcommand] [args]
   today [range]    dashboard for a range
   week             7-day rollup
   score [range]    one-line bot/driver score (good for status bars)
-  split [range]    driver vs bot turn split — who's doing the work?
+  split [range]    driver vs bot turn split (learned gap model; --det = old 5s rule)
   session [sid]    list sessions today, or drill into one
   replay [range]   animated playback  [--speed N]  [--follow]
   diff A B         compare two ranges

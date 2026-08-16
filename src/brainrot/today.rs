@@ -36,20 +36,23 @@ pub fn run(spec: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 fn empty_view(cov: &Coverage) {
     if cov.currently_off {
-        bullet(&red("⚠ ledger is OFF — no records being captured"));
+        bullet(&red("⚠ ledger is OFF, no records being captured"));
         if let Some(ts) = cov.last_event_ts {
             let ago = now_secs() - ts;
-            println!("       {}", dim(&format!("turned off {} ago", fmt_dur(ago))));
+            println!(
+                "       {}",
+                dim(&format!("turned off {} ago", fmt_dur(ago)))
+            );
         }
     } else if !cov.off_intervals.is_empty() {
         let off_total: f64 = cov.off_intervals.iter().map(|(a, b)| b - a).sum();
         bullet(&dim(&format!(
-            "(no records — ledger was off for {} of {})",
+            "(no records, ledger was off for {} of {})",
             fmt_dur(off_total),
             fmt_dur(cov.total_s)
         )));
     } else {
-        bullet(&dim("(no records — go make some API calls)"));
+        bullet(&dim("(no records, go make some API calls)"));
     }
     println!();
 }
@@ -72,7 +75,7 @@ fn scores_view(a: &Aggregate, baseline: &Baseline, cov: &Coverage) {
             bold("driver"),
             grey("  —"),
             grey("—"),
-            grey("learning your typing baseline (need a few more typed messages)")
+            grey("learning your driving baseline (need a few more driven messages)")
         );
     } else {
         println!(
@@ -84,7 +87,7 @@ fn scores_view(a: &Aggregate, baseline: &Baseline, cov: &Coverage) {
         );
     }
     if !drv_bootstrap {
-        if let Some(diag) = diagnosis(bot, drv) {
+        if let Some(diag) = diagnosis_for(&a, &baseline) {
             println!("        {} {}", grey("↳"), subtle(diag));
         }
     }
@@ -120,7 +123,7 @@ fn render_coverage_line(cov: &Coverage) -> Option<String> {
     }
     let word = if n_gaps == 1 { "gap" } else { "gaps" };
     let s = format!(
-        "coverage {} of {} ({:.0}% — {} {})",
+        "coverage {} of {} ({:.0}%, {} {})",
         fmt_dur(cov.active_s),
         fmt_dur(total),
         pct,
@@ -143,7 +146,11 @@ fn summary_view(a: &Aggregate) {
     let p99 = percentile(&mut lats, 99.0);
     let span = a.last_ts.unwrap_or(0.0) - a.first_ts.unwrap_or(0.0);
     let sess_count = a.sessions.len();
-    let sess_word = if sess_count == 1 { "session" } else { "sessions" };
+    let sess_word = if sess_count == 1 {
+        "session"
+    } else {
+        "sessions"
+    };
 
     section("traffic");
     println!(
@@ -200,8 +207,7 @@ fn burn_view(a: &Aggregate) {
     let peak_min = first_min + peak_idx as i64;
     let peak_dt = time::OffsetDateTime::from_unix_timestamp(peak_min * 60)
         .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
-    let local_offset = time::UtcOffset::current_local_offset()
-        .unwrap_or(time::UtcOffset::UTC);
+    let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
     let peak_local = peak_dt.to_offset(local_offset);
     let peak_str = format!("{:02}:{:02}", peak_local.hour(), peak_local.minute());
     let peak_max = series.iter().cloned().fold(0.0_f64, f64::max);
@@ -228,7 +234,8 @@ fn by_hour_view(a: &Aggregate) {
         let cell = match a.by_hour.get(&h) {
             Some(hb) if hb.n > 0 => {
                 let avg_lat = hb.lat_sum as f64 / hb.n as f64;
-                let intensity = ((hb.n as f64 / (a.n as f64 / 24.0).max(1.0)) * 4.0).min(7.0) as usize;
+                let intensity =
+                    ((hb.n as f64 / (a.n as f64 / 24.0).max(1.0)) * 4.0).min(7.0) as usize;
                 let ch = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'][intensity];
                 heat_ms(avg_lat, &ch.to_string())
             }

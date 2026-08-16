@@ -19,7 +19,7 @@
 | `host` | `"127.0.0.1"` | Bind address |
 | `port` | `7178` | Bind port |
 | `system_override` | `""` | Extra system block injected into every `/v1/messages`. Empty = skip injection. |
-| `pain` | `false` | `false` trims Claude Code's three large bloat blocks; `true` leaves them alone. (Only relevant to Claude Code traffic.) |
+| `pain` | `false` | `false` trims Claude Code's bloat blocks; `true` keeps them. Claude Code only. |
 | `ledger` | `true` | Write per-response JSONL records to `~/.local/share/ccft/ledger.jsonl`. |
 
 Config reload requires restart (`ccft restart`).
@@ -37,11 +37,16 @@ Each line in `~/.local/share/ccft/ledger.jsonl`:
   "cip": "127.0.0.1:54188", "pip": "124.29.237.112", "sip": null,
   "reg": null, "model": "claude-haiku-4-5-20251001",
   "in": 520, "out": 84, "tot": 604, "lat": 758,
-  "cr": 0, "cc": 0, "c_us": 115
+  "cr": 0, "cc": 0, "c_us": 115,
+  "u_ch": 0, "tr_ch": 0, "th_ch": 0, "lxd": 0.0, "fnw": 0.0, "nge": 0.0, "nvt": 0.0
 }
 ```
 
-The TUI brainrot panel reads this file as-is.
+`u_ch`/`tr_ch` = char counts of the delta (new content this session). `u_ch` = plain text; `tr_ch` = tool_result. `th_ch` = LLM reasoning/thinking chars. `lxd`/`fnw`/`nge` = lexical stats (TTR, function-word fraction, bigram entropy) for the wordology classifier. `nvt` = cross-turn novelty: content bigram reuse fraction (computed in-memory, only fraction persisted). Zero when absent/short — classifier treats as "no signal".
+
+Resend-all APIs (full-conversation) re-send history; only new-content is attributed. Per-session fingerprint + bigram state is in-memory, never persisted.
+
+TUI brainrot panel reads this file directly.
 
 ## File layout
 
