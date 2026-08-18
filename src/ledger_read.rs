@@ -1,7 +1,7 @@
 use crate::config::paths;
 use serde_json::Value;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default)]
@@ -58,6 +58,91 @@ impl Record {
     }
 }
 
+/// Read the last N lines from a text file.
+/// Seeks backwards byte-by-byte — safe, no line-boundary corruption.
+fn read_last_n_lines(path: &std::path::Path, n: usize) -> Vec<String> {
+    let f = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let metadata = match f.metadata() {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+    let file_size = metadata.len() as u64;
+    if file_size == 0 {
+        return Vec::new();
+    }
+
+    let mut lines: Vec<String> = Vec::with_capacity(n);
+    let mut reader = std::io::BufReader::new(f);
+    reader.seek(std::io::SeekFrom::End(0)).ok();
+    let mut pos = reader.stream_position().unwrap_or(0);
+
+    while pos > 0 && lines.len() < n {
+        if pos > 1024 {
+            pos -= 1024;
+        } else {
+            pos = 0;
+        }
+        reader.seek(std::io::SeekFrom::Start(pos)).ok();
+        let mut buf = String::new();
+        reader.read_to_string(&mut buf).ok();
+        pos += buf.len() as u64;
+
+        for line in buf.lines().rev() {
+            lines.push(line.to_string());
+            if lines.len() >= n {
+                break;
+            }
+        }
+    }
+
+    // Remove trailing empty lines that were part of the file
+    while lines.last().map_or(false, |l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
+/// Load exactly the top-N (newest-first) records from the ledger,
+/// without parsing the entire file.
+pub fn load_top_records(n: usize) -> Vec<Record> {
+    let files = ledger_files();
+    if files.is_empty() {
+        return Vec::new();
+    }
+
+    // Check newest file first (live, then archive reversed)
+    for file in files.iter().rev() {
+        let lines = read_last_n_lines(file, n * 2);
+        let mut records = Vec::with_capacity(n);
+        for raw_line in lines {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let v: Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let r = match Record::from_value(&v) {
+                Some(r) => r,
+                None => continue,
+            };
+            if r.ts < 1_262_304_000.0 {
+                continue;
+            }
+            records.push(r);
+            if records.len() >= n {
+                return records;
+            }
+        }
+    }
+
+    Vec::new()
+}
+
 pub fn iter_records(since: Option<f64>, until: Option<f64>) -> impl Iterator<Item = Record> {
     let files = ledger_files();
     files.into_iter().flat_map(move |p| {
@@ -96,6 +181,61 @@ pub fn iter_records(since: Option<f64>, until: Option<f64>) -> impl Iterator<Ite
         }
         out.into_iter()
     })
+}
+
+/// Return the mtime (in seconds since epoch) of all ledger files combined.
+/// For caching baseline: only recompute when the latest record's timestamp
+/// changes, meaning new data was appended.
+pub fn ledger_files_mtime() -> u64 {
+    let files = ledger_files();
+    files
+        .iter()
+        .filter_map(|p| {
+            p.metadata().ok().map(|m| {
+                m.modified()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or(std::time::Duration::ZERO)
+                    .as_secs() as i64
+            })
+        })
+        .max()
+        .unwrap_or(0) as u64
+}
+
+/// Return the newest record's timestamp, used to detect new ledger entries.
+pub fn newest_record_ts() -> Option<f64> {
+    let files = ledger_files();
+    // Check from newest file first (live then archive reversed)
+    for file in files.iter().rev() {
+        let f = match fs::File::open(file) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let reader = BufReader::new(f);
+        for line in reader
+            .lines()
+            .map_while(Result::ok)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let v: Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if let Some(v) = v.as_object() {
+                if let Some(ts) = v.get("ts").and_then(Value::as_f64) {
+                    return Some(ts);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn ledger_files() -> Vec<PathBuf> {
