@@ -614,14 +614,63 @@ fn extract_previous_response_id(body: &[u8]) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn should_intercept(req: &Request<Body>, cfg: &Config) -> bool {
-    if !cfg.ledger_enabled {
-        return false;
-    }
-    classify_post(req).is_some()
+/// Split a `host[:port]` hosts entry. A bare host implies the protocol's
+/// default port (443 — flytrap only touches TLS CONNECT tunnels). Returns the
+/// bracket-stripped host and port.
+fn flytrap_host_entry(entry: &str) -> (&str, u16) {
+    let (h, p) = match entry.rsplit_once(':') {
+        Some((h, p)) => (h, p),
+        None => (entry, "443"),
+    };
+    let host = h
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(h);
+    (host, p.parse().unwrap_or(443))
+}
+
+/// Is this CONNECT authority (host[:port]) one we should flytrap?
+fn should_flytrap_authority(cfg: &Config, host: &str, port: u16) -> bool {
+    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    cfg.hosts.iter().any(|entry| {
+        let (h, p) = flytrap_host_entry(entry);
+        h == host && p == port
+    })
+}
+
+/// Is this TLS SNI hostname one we should flytrap? (SNI carries no port, so
+/// this matches the hostname half of an entry; the CONNECT gate already
+/// verified the exact host:port.)
+fn should_flytrap_sni(cfg: &Config, host: &str) -> bool {
+    cfg.hosts.iter().any(|entry| {
+        let (h, _) = flytrap_host_entry(entry);
+        h == host
+    })
 }
 
 impl HttpHandler for CcftHandler {
+    fn should_intercept_connect(
+        &mut self,
+        _ctx: &HttpContext,
+        req: &Request<Body>,
+    ) -> impl std::future::Future<Output = bool> + Send {
+        async move {
+            let host = req.uri().host().unwrap_or("");
+            let port = req.uri().port_u16().unwrap_or(443);
+            should_flytrap_authority(&self.cfg, host, port)
+        }
+    }
+
+    fn should_intercept_tls(
+        &mut self,
+        _ctx: &HttpContext,
+        client_hello: hudsucker::rustls::server::ClientHello<'_>,
+    ) -> impl std::future::Future<Output = bool> + Send {
+        async move {
+            should_flytrap_sni(&self.cfg, client_hello.server_name().unwrap_or(""))
+        }
+    }
+
     fn handle_request(
          &mut self,
          _ctx: &HttpContext,
@@ -898,5 +947,52 @@ mod tests {
     fn content_bigrams_skip_function_word_glue() {
         let bigs = content_bigrams("of the and to be a in for it");
         assert!(bigs.is_empty(), "glue-only text has no content bigrams");
+    }
+
+    #[test]
+    fn flytrap_gating_scoped_to_model_hosts() {
+        let cfg = Config::default();
+        // api.anthropic.com (bare host → default port 443) is flytrapped
+        // from both the CONNECT authority and the TLS SNI.
+        assert!(should_flytrap_authority(&cfg, "api.anthropic.com", 443));
+        assert!(should_flytrap_sni(&cfg, "api.anthropic.com"));
+        // Everything else passes through untouched — the exact regression
+        // that broke gh / git / npm / pip TLS verify.
+        assert!(!should_flytrap_authority(&cfg, "api.github.com", 443));
+        assert!(!should_flytrap_sni(&cfg, "api.github.com"));
+        assert!(!should_flytrap_authority(&cfg, "github.com", 443));
+        assert!(!should_flytrap_sni(&cfg, "github.com"));
+    }
+
+    #[test]
+    fn flytrap_gating_honors_custom_hosts() {
+        let cfg = Config {
+            hosts: vec!["127.0.0.1:8081".into()],
+            ..Config::default()
+        };
+        assert!(should_flytrap_authority(&cfg, "127.0.0.1", 8081));
+        assert!(should_flytrap_sni(&cfg, "127.0.0.1"));
+        // Wrong port on the authority is not flytrapped.
+        assert!(!should_flytrap_authority(&cfg, "127.0.0.1", 8082));
+    }
+
+    #[test]
+    fn flytrap_entry_default_port_is_443() {
+        let (host, port) = flytrap_host_entry("api.anthropic.com");
+        assert_eq!(host, "api.anthropic.com");
+        assert_eq!(port, 443);
+        let (host, port) = flytrap_host_entry("127.0.0.1:11434");
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn env_host_parses_url_and_hostport() {
+        use crate::config::host_from_env;
+        assert_eq!(host_from_env("127.0.0.1:11434"), Some("127.0.0.1:11434".into()));
+        assert_eq!(host_from_env("http://127.0.0.1:11434"), Some("127.0.0.1:11434".into()));
+        assert_eq!(host_from_env("http://127.0.0.1:11434/v1"), Some("127.0.0.1:11434".into()));
+        assert_eq!(host_from_env("api.openai.com"), Some("api.openai.com".into()));
+        assert_eq!(host_from_env(""), None);
     }
 }

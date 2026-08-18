@@ -10,7 +10,16 @@
   "port":            7178,
   "system_override": "",
   "pain":            false,
-  "ledger":          true
+  "ledger":          true,
+  "hosts":           [
+    "api.anthropic.com",
+    "api.openai.com",
+    "127.0.0.1:11434",
+    "0.0.0.0:11434",
+    "127.0.0.1:1234",
+    "127.0.0.1:1337",
+    "127.0.0.1:4891"
+  ]
 }
 ```
 
@@ -21,6 +30,7 @@
 | `system_override` | `""` | Extra system block injected into every `/v1/messages`. Empty = skip injection. |
 | `pain` | `false` | `false` trims Claude Code's bloat blocks; `true` keeps them. Claude Code only. |
 | `ledger` | `true` | Write per-response JSONL records to `~/.local/share/ccft/ledger.jsonl`. |
+| `hosts` | defaults | `host[:port]` CONNECT targets ccft flytraps (intercept + decrypt + re-sign). Bare host implies default port 443. Only hosts with dedicated ports belong here. `[]` = flytrap nothing. Absent = `DEFAULT_HOSTS`. Also unions in hosts from `OLLAMA_HOST`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `ANTHROPIC_BASE_URL`. |
 
 Config reload requires restart (`ccft restart`).
 

@@ -45,7 +45,7 @@ ccft trust --apply
 
 **Dev mode** — `ccft dev` sets up a parallel dev system: a separate `com.ccft.dev` service unit on port 7179 with an isolated config + ledger, independent of the main install. Run it locally at your own accord with `CCFT_DEV=1 ccft run`. Details in [`docs/install.md#dev-mode`](docs/install.md#dev-mode).
 
-**Config** — three knobs in `~/.config/ccft/ccft.json`: `system_override` (extra system prompt), `pain` (false trims Claude Code's bloat blocks), `ledger` (write JSONL). See [`docs/reference.md#config`](docs/reference.md#config).
+**Config** — knobs in `~/.config/ccft/ccft.json`: `system_override` (extra system prompt), `pain` (false trims Claude Code's bloat blocks), `ledger` (write JSONL), `hosts` (which `host[:port]` endpoints ccft flytraps; env vars like `OLLAMA_HOST` union in automatically). See [`docs/reference.md#config`](docs/reference.md#config).
 
 **Architecture** — hudsucker (hyper-1.x + tokio + rustls), host-gated to known model-provider hosts (`api.anthropic.com`, plus any configured OpenAI-compatible local servers). Other CONNECT requests pass straight through, so `gh`, `git`, `npm`, `pip` keep working from any subprocess. See [`docs/architecture.md`](docs/architecture.md).
 

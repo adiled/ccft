@@ -20,6 +20,26 @@ use tracing::*;
 /// when the user hasn't overridden it via config or env.
 pub const DEFAULT_SERVICE_LABEL: &str = "com.ccft";
 
+/// Known model-provider / OpenAI-compatible hosts ccft flytraps by default.
+/// Each entry is `host` or `host:port`; a bare host implies the protocol's
+/// default port (443 — flytrap only touches TLS CONNECT tunnels).
+///
+/// Only hosts with **dedicated, exclusive** ports are included. Shared ports
+/// (8080, 8000, 5000) are used by many unrelated services, so they're left
+/// out to avoid intercepting traffic that isn't an OpenAI-format endpoint.
+/// Add a host here only when it owns its port.
+pub const DEFAULT_HOSTS: &[&str] = &[
+    // Anthropic / OpenAI first-party coding agents.
+    "api.anthropic.com", // Anthropic /v1/messages
+    "api.openai.com",    // OpenAI API / Codex (chat.completions)
+    // Local OpenAI-compatible servers with dedicated default ports.
+    "127.0.0.1:11434", // Ollama
+    "0.0.0.0:11434",   // Ollama (all-interfaces listen)
+    "127.0.0.1:1234",  // LM Studio
+    "127.0.0.1:1337",  // Jan
+    "127.0.0.1:4891",  // GPT4All
+];
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub host: String,
@@ -28,6 +48,12 @@ pub struct Config {
     pub pain_enabled: bool,
     pub ledger_enabled: bool,
     pub highway_enabled: bool,
+    /// `host[:port]` CONNECT targets to flytrap (intercept + decrypt + re-sign).
+    /// A bare host implies the protocol's default port (443 — flytrap only
+    /// touches TLS CONNECT tunnels). Only hosts with dedicated, exclusive
+    /// ports belong here: shared ports (8080, 8000, 5000) would intercept
+    /// unrelated services. Everything not listed gets a raw passthrough tunnel.
+    pub hosts: Vec<String>,
     /// Reverse-DNS-style identifier used for the user-mode service unit:
     /// `<label>.plist` on macOS, `<label>.service` on Linux. Defaults to
     /// `com.ccft`. Override per-install via `ccft install --label …` or
@@ -44,6 +70,7 @@ impl Default for Config {
             pain_enabled: false,
             ledger_enabled: true,
             highway_enabled: true,
+            hosts: DEFAULT_HOSTS.iter().map(|s| s.to_string()).collect(),
             // In dev mode the default service unit is com.ccft.dev so the
             // parallel dev system never collides with production.
             service_label: if paths::is_dev() {
@@ -51,6 +78,45 @@ impl Default for Config {
             } else {
                 DEFAULT_SERVICE_LABEL.into()
             },
+        }
+    }
+}
+
+/// Env vars that point an OpenAI-compatible / Anthropic client at a specific
+/// endpoint. ccft reads these so a locally-configured server (e.g. Ollama via
+/// OLLAMA_HOST) is auto-discovered and added to the `hosts` flytrap list.
+const HOST_ENV_VARS: &[&str] = &[
+    "OLLAMA_HOST",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "ANTHROPIC_BASE_URL",
+];
+
+/// Parse an env value like `127.0.0.1:11434`, `http://127.0.0.1:11434`, or
+/// `http://127.0.0.1:11434/v1` into a `host[:port]` flytrap entry. A bare host
+/// keeps no port — the flytrap match applies the 443 default.
+pub(crate) fn host_from_env(value: &str) -> Option<String> {
+    let v = value.trim();
+    if v.is_empty() {
+        return None;
+    }
+    let v = v.split("://").nth(1).unwrap_or(v);
+    let authority = v.split('/').next().unwrap_or(v);
+    if authority.is_empty() {
+        return None;
+    }
+    Some(authority.to_string())
+}
+
+/// Seed `cfg.hosts` from `*_HOST` / `*_BASE_URL` env vars (union, dedup).
+fn env_hosts(cfg: &mut Config) {
+    for var in HOST_ENV_VARS {
+        if let Ok(v) = std::env::var(var) {
+            if let Some(h) = host_from_env(&v) {
+                if !cfg.hosts.iter().any(|e| e == &h) {
+                    cfg.hosts.push(h);
+                }
+            }
         }
     }
 }
@@ -107,20 +173,38 @@ impl Config {
         if let Some(b) = parsed.get("highway").and_then(Value::as_bool) {
             cfg.highway_enabled = b;
         }
+        if let Some(arr) = parsed.get("hosts").and_then(Value::as_array) {
+            let mut hosts = Vec::new();
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    if !s.trim().is_empty() {
+                        hosts.push(s.trim().to_string());
+                    }
+                }
+            }
+            // Empty array → flytrap nothing. Absent → DEFAULT_HOSTS.
+            cfg.hosts = hosts;
+        }
         if let Some(s) = parsed.get("service_label").and_then(Value::as_str) {
             if !s.trim().is_empty() {
                 cfg.service_label = s.trim().to_string();
             }
         }
 
+        // Union in hosts discovered from `*_HOST` / `*_BASE_URL` env vars
+        // (e.g. OLLAMA_HOST), so a locally-configured server is flytrapped
+        // even when it isn't in the config file.
+        env_hosts(&mut cfg);
+
         info!(
-             "[ccft] config loaded ({}): host={} port={} pain={} ledger={} highway={} label={} override={}chars",
+             "[ccft] config loaded ({}): host={} port={} pain={} ledger={} highway={} hosts={} label={} override={}chars",
             path.display(),
             cfg.host,
             cfg.port,
             cfg.pain_enabled,
             cfg.ledger_enabled,
             cfg.highway_enabled,
+            cfg.hosts.join(","),
             cfg.service_label,
             cfg.system_override.len(),
          );

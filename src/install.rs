@@ -2,7 +2,7 @@
 //! and config, and register with the platform's user-mode service manager
 //! (launchd / systemd-user). Idempotent both directions.
 
-use crate::config::{paths, DEFAULT_SERVICE_LABEL};
+use crate::config::{paths, DEFAULT_HOSTS, DEFAULT_SERVICE_LABEL};
 use crate::service;
 use crate::trust;
 use std::fs;
@@ -91,7 +91,7 @@ pub fn install(label: Option<String>) -> Result<(), Box<dyn std::error::Error>> 
         // Dev mode installs into dev.json with the dev port so the parallel
         // system runs independently on 7179.
         let port = if paths::is_dev() { 7179 } else { 7178 };
-        let default_cfg = serde_json::json!({
+        let mut default_cfg = serde_json::json!({
             "host":            "127.0.0.1",
             "port":            port,
             "system_override": "",
@@ -99,6 +99,15 @@ pub fn install(label: Option<String>) -> Result<(), Box<dyn std::error::Error>> 
             "ledger":          true,
             "service_label":   resolved_label,
         });
+        if let Some(obj) = default_cfg.as_object_mut() {
+            obj.insert(
+                "hosts".into(),
+                DEFAULT_HOSTS
+                    .iter()
+                    .map(|h| serde_json::json!(h))
+                    .collect(),
+            );
+        }
         fs::write(&cfg_path, serde_json::to_string_pretty(&default_cfg)? + "\n")?;
         println!("✓ wrote default config {}", cfg_path.display());
     } else {
