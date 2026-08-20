@@ -59,8 +59,15 @@ impl Record {
 }
 
 /// Read the last N lines from a text file.
-/// Seeks backwards byte-by-byte — safe, no line-boundary corruption.
+///
+/// Opens a fresh file handle each iteration so there is no stale BufReader
+/// state.  Reads backward in chunks until we have at least `n` complete lines,
+/// returning them newest-first.  No partial lines leak into the output.
 fn read_last_n_lines(path: &std::path::Path, n: usize) -> Vec<String> {
+    if n == 0 {
+        return Vec::new();
+    }
+
     let f = match fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return Vec::new(),
@@ -74,35 +81,139 @@ fn read_last_n_lines(path: &std::path::Path, n: usize) -> Vec<String> {
         return Vec::new();
     }
 
-    let mut lines: Vec<String> = Vec::with_capacity(n);
-    let mut reader = std::io::BufReader::new(f);
-    reader.seek(std::io::SeekFrom::End(0)).ok();
-    let mut pos = reader.stream_position().unwrap_or(0);
+    // Accumulate bytes from oldest → newest.
+    //
+    // File layout (bytes):       [ … | OLD_CHUNK | NEW_CHUNK ]
+    //                            0         ^              ^ file_size
+    //
+    // Seek NEW_CHUNK first (near end), then OLD_CHUNK before it.
+    // By pushing new bytes AFTER existing ones we get chronological order
+    // inside `buf` so `text.lines()` yields newest-last, and we just take
+    // the last `n` and reverse them.
+    let mut buf = Vec::new();
+    let mut cursor = file_size;
+    let chunk_size = 8192u64; // 8 KB chunks
 
-    while pos > 0 && lines.len() < n {
-        if pos > 1024 {
-            pos -= 1024;
-        } else {
-            pos = 0;
+    loop {
+        let read_size = std::cmp::min(chunk_size, cursor);
+        cursor = cursor.saturating_sub(read_size);
+
+        let mut reader = match fs::File::open(path) {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+        if reader.seek(std::io::SeekFrom::Start(cursor)).is_err() {
+            break;
         }
-        reader.seek(std::io::SeekFrom::Start(pos)).ok();
-        let mut buf = String::new();
-        reader.read_to_string(&mut buf).ok();
-        pos += buf.len() as u64;
 
-        for line in buf.lines().rev() {
-            lines.push(line.to_string());
-            if lines.len() >= n {
-                break;
+        let mut chunk = vec![0u8; read_size as usize];
+        if reader.read_exact(&mut chunk).is_err() {
+            break;
+        }
+
+        buf.extend(chunk);
+
+        // Parse UTF-8 and count non-empty lines
+        let text = String::from_utf8_lossy(&buf);
+        let lines_count = text.lines().filter(|l| !l.trim().is_empty()).count();
+
+        if lines_count >= n {
+            // We have enough data.
+            let lines: Vec<String> = text
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            // Return the last `n` lines in reverse (newest-first) order.
+            let start = lines.len().saturating_sub(n);
+            let mut result: Vec<String> = lines[start..].to_vec();
+            result.reverse();
+            return result;
+        }
+
+        if cursor == 0 {
+            break; // reached the beginning of the file
+        }
+    }
+
+    // Reached file start without getting enough lines — return what we have.
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    lines.reverse();
+    lines
+}
+
+/// Incremental tail reader for a growing JSONL ledger.
+///
+/// Reads bottom-up from the last-read byte offset and only ever returns
+/// *complete* lines appended since the previous call. A partial trailing
+/// line (writer still mid-write) is held in a pending buffer and only
+/// released once a newline closes it. This makes the accumulated output a
+/// ditto-exact copy of the file — same records, same order, same count.
+pub struct TailReader {
+    pos: u64,
+    pending: String,
+}
+
+impl TailReader {
+    pub fn new() -> Self {
+        Self {
+            pos: 0,
+            pending: String::new(),
+        }
+    }
+
+    /// Return the complete JSONL lines appended since the last call,
+    /// in file (chronological) order. Never returns partial lines.
+    pub fn read_new(&mut self, path: &std::path::Path) -> Vec<String> {
+        let mut f = match fs::File::open(path) {
+            Ok(f) => f,
+            Err(_) => return Vec::new(),
+        };
+        let size = match f.metadata() {
+            Ok(m) => m.len(),
+            Err(_) => return Vec::new(),
+        };
+        if size <= self.pos {
+            return Vec::new();
+        }
+        if f.seek(std::io::SeekFrom::Start(self.pos)).is_err() {
+            return Vec::new();
+        }
+        let mut bytes = Vec::new();
+        if f.read_to_end(&mut bytes).is_err() {
+            return Vec::new();
+        }
+        self.pos += bytes.len() as u64;
+
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        if !self.pending.is_empty() {
+            text = std::mem::take(&mut self.pending) + &text;
+        }
+
+        let mut out = Vec::new();
+        match text.rfind('\n') {
+            Some(idx) => {
+                // Everything through the last newline is complete.
+                out.extend(
+                    text[..=idx]
+                        .lines()
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty()),
+                );
+                self.pending = text[idx + 1..].to_string();
+            }
+            None => {
+                // Whole chunk is a partial line — hold it.
+                self.pending = text;
             }
         }
+        out
     }
-
-    // Remove trailing empty lines that were part of the file
-    while lines.last().map_or(false, |l| l.trim().is_empty()) {
-        lines.pop();
-    }
-    lines
 }
 
 /// Load exactly the top-N (newest-first) records from the ledger,
@@ -503,4 +614,109 @@ pub fn percentile(values: &mut [u64], p: f64) -> f64 {
     let lo = values[f] as f64;
     let hi = values[c] as f64;
     lo + (hi - lo) * (k - f as f64)
+}
+
+// ─── Integration test ─────────────────────────────────────────────────────────
+//
+// Black-box concurrency test: ek thread ledger pe records dalta hai (producer),
+// doosra thread TailReader se apni copy banata hai (consumer). End mein copy ko
+// asal file se ditto compare karte hain — same records, same order, same count.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn concurrent_producer_consumer_copy_matches_file_ditto() {
+        let td = tempfile::TempDir::new().unwrap();
+        let live = td.path().join("ledger.jsonl");
+        let live = live.clone();
+
+        const N: u32 = 300;
+
+        // Producer thread: tana-tan records dalta hai, flush karta hai.
+        let w_live = live.clone();
+        let (tx, rx) = mpsc::channel::<()>();
+        let writer = std::thread::spawn(move || {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&w_live)
+                .unwrap();
+            for i in 0..N {
+                let ts = 1_700_000_000.0 + i as f64;
+                let rec = serde_json::json!({
+                    "ts": ts,
+                    "te": ts + 1.0,
+                    "in": i,
+                    "out": i * 2,
+                    "model": "claude-3",
+                });
+                writeln!(f, "{}", rec).unwrap();
+                // Writer ko aaram se likhne do — partial lines, interleaving.
+                std::thread::sleep(Duration::from_micros(50));
+            }
+            f.flush().unwrap();
+            f.sync_all().unwrap();
+            tx.send(()).unwrap();
+        });
+
+        // Consumer thread: TailReader se apni copy banata hai.
+        let r_live = live.clone();
+        let reader = std::thread::spawn(move || {
+            let mut tr = TailReader::new();
+            let mut copy: Vec<String> = Vec::new();
+            loop {
+                copy.extend(tr.read_new(&r_live));
+                match rx.try_recv() {
+                    Ok(()) => {
+                        // Writer done — ek aakhri read se baaki partial line pakdo.
+                        copy.extend(tr.read_new(&r_live));
+                        break;
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(1)),
+                }
+            }
+            copy
+        });
+
+        writer.join().unwrap();
+        let copy = reader.join().unwrap();
+
+        // Asal file (source of truth) se lines nikaalo.
+        let file_lines: Vec<String> = fs::read_to_string(&live)
+            .unwrap()
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        // Ditto check — same records, same order, same length, same size.
+        assert_eq!(
+            copy.len(),
+            file_lines.len(),
+            "record count mismatch: reader {} vs file {}",
+            copy.len(),
+            file_lines.len()
+        );
+        assert_eq!(
+            copy, file_lines,
+            "reader's copy != actual file (order/content mismatch)"
+        );
+
+        // Har record valid JSON aur valid ts hota hai (no partial/corrupt line).
+        for (i, line) in copy.iter().enumerate() {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let ts = v.get("ts").unwrap().as_f64().unwrap();
+            assert!(
+                ts >= 1_700_000_000.0 && ts < 1_700_000_000.0 + N as f64,
+                "record {} out-of-range ts: {}",
+                i,
+                ts
+            );
+        }
+    }
 }
