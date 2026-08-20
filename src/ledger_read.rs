@@ -167,6 +167,27 @@ impl TailReader {
         }
     }
 
+    /// Create a reader anchored at a time-window start.
+    ///
+    /// Binary-searches the ledger for the byte offset of the first record
+    /// whose `ts >= since_ts`, then tail-reads from there — so only records
+    /// inside `[since_ts, now]` are ever read, not the whole file.
+    pub fn new_anchored(path: &std::path::Path, since_ts: f64) -> Self {
+        let mut tr = Self::new();
+        match find_offset_for_ts(path, since_ts) {
+            Some(off) => tr.pos = off,
+            // No record in window — anchor past EOF so nothing is ever read.
+            None => {
+                if let Ok(f) = fs::File::open(path) {
+                    if let Ok(m) = f.metadata() {
+                        tr.pos = m.len();
+                    }
+                }
+            }
+        }
+        tr
+    }
+
     /// Return the complete JSONL lines appended since the last call,
     /// in file (chronological) order. Never returns partial lines.
     pub fn read_new(&mut self, path: &std::path::Path) -> Vec<String> {
@@ -214,6 +235,135 @@ impl TailReader {
         }
         out
     }
+}
+
+/// Byte offset of the first record with `ts >= since_ts`, aligned to a line
+/// start (never mid-line). Returns `None` when no record is in window.
+///
+/// Records are appended chronologically and `ts` is non-decreasing, so this
+/// is a monotone predicate → binary search over byte offsets.
+fn find_offset_for_ts(path: &std::path::Path, since_ts: f64) -> Option<u64> {
+    let f = fs::File::open(path).ok()?;
+    let size = f.metadata().ok()?.len();
+    if size == 0 {
+        return None;
+    }
+
+    // Newest record ts — if already older than the window, nothing matches.
+    if let Some(ts) = last_line_ts(&f, size) {
+        if ts < since_ts {
+            return None;
+        }
+    }
+
+    // Earliest record ts — if already inside the window, offset 0 matches.
+    if let Some(ts) = line_ts_at(&f, 0, size) {
+        if ts >= since_ts {
+            return Some(0);
+        }
+    }
+
+    // left = a line start with ts < since, right = a line start with ts >= since.
+    let mut left = 0u64;
+    let mut right = last_line_start(&f, size)?;
+
+    loop {
+        // Boundary found when right is the line immediately after left.
+        if let Some(nxt) = next_line_start(&f, left, size) {
+            if nxt == right {
+                return Some(right);
+            }
+        }
+
+        let mid = (left + right) / 2;
+        let start = match next_line_start(&f, mid, size) {
+            Some(s) => s,
+            None => return Some(right),
+        };
+        let ts = match line_ts_at(&f, start, size) {
+            Some(t) => t,
+            None => return Some(right),
+        };
+
+        if ts < since_ts {
+            // This line predates the window — boundary is after it.
+            left = start;
+        } else if start < right {
+            // In-window line before current right — narrow down.
+            right = start;
+        } else {
+            // Probe hit/passed right with no rightward progress.
+            // Only the final few lines remain — scan forward from left.
+            return first_in_window(&f, left, size, since_ts);
+        }
+    }
+}
+
+/// First line start after `from` whose ts >= since_ts (linear, small window).
+fn first_in_window(f: &fs::File, from: u64, size: u64, since_ts: f64) -> Option<u64> {
+    let mut cur = from;
+    loop {
+        let nxt = match next_line_start(f, cur, size) {
+            Some(n) => n,
+            None => return None,
+        };
+        let ts = match line_ts_at(f, nxt, size) {
+            Some(t) => t,
+            None => return None,
+        };
+        if ts >= since_ts {
+            return Some(nxt);
+        }
+        cur = nxt;
+    }
+}
+
+/// Timestamp of the first non-empty line at/after byte `pos`.
+fn line_ts_at(f: &fs::File, pos: u64, _size: u64) -> Option<f64> {
+    let mut r = std::io::BufReader::new(f.try_clone().ok()?);
+    r.seek(std::io::SeekFrom::Start(pos)).ok()?;
+    let mut buf = String::new();
+    r.read_to_string(&mut buf).ok()?;
+    let line = buf.lines().find(|l| !l.trim().is_empty())?;
+    let v = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+    v.get("ts")?.as_f64()
+}
+
+/// Timestamp of the last non-empty line in the file.
+fn last_line_ts(f: &fs::File, size: u64) -> Option<f64> {
+    let mut buf = Vec::new();
+    let mut r = std::io::BufReader::new(f.try_clone().ok()?);
+    r.seek(std::io::SeekFrom::Start(size.saturating_sub(8192)))
+        .ok()?;
+    r.read_to_end(&mut buf).ok()?;
+    let s = String::from_utf8_lossy(&buf);
+    let line = s.lines().rev().find(|l| !l.trim().is_empty())?;
+    let v = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+    v.get("ts")?.as_f64()
+}
+
+/// Byte offset of the start of the last complete line in the file.
+fn last_line_start(f: &fs::File, size: u64) -> Option<u64> {
+    let mut buf = Vec::new();
+    let mut r = std::io::BufReader::new(f.try_clone().ok()?);
+    r.seek(std::io::SeekFrom::Start(size.saturating_sub(8192)))
+        .ok()?;
+    r.read_to_end(&mut buf).ok()?;
+    let s = String::from_utf8_lossy(&buf);
+    s.rfind('\n')
+        .map(|i| size.saturating_sub(8192) + i as u64 + 1)
+}
+
+/// Byte offset of the first complete line starting strictly after `pos`
+/// (skips any partial first line). `None` if only a trailing partial line
+/// remains — i.e. no complete line after `pos`.
+fn next_line_start(f: &fs::File, pos: u64, _size: u64) -> Option<u64> {
+    let mut r = std::io::BufReader::new(f.try_clone().ok()?);
+    r.seek(std::io::SeekFrom::Start(pos)).ok()?;
+    let mut buf = Vec::new();
+    r.read_to_end(&mut buf).ok()?;
+    let s = String::from_utf8_lossy(&buf);
+    s.find('\n').map(|i| pos + i as u64 + 1)
 }
 
 /// Load exactly the top-N (newest-first) records from the ledger,
@@ -718,5 +868,99 @@ mod tests {
                 ts
             );
         }
+    }
+
+    #[test]
+    fn anchored_reader_reads_only_window_from_ts_offset() {
+        let td = tempfile::TempDir::new().unwrap();
+        let live = td.path().join("ledger.jsonl");
+        let base = 1_700_000_000.0;
+
+        // 100 records, ts base..base+99 (chronological).
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&live)
+                .unwrap();
+            for i in 0..100u32 {
+                let rec = serde_json::json!({ "ts": base + i as f64, "in": i });
+                writeln!(f, "{}", rec).unwrap();
+            }
+            f.flush().unwrap();
+            f.sync_all().unwrap();
+        }
+
+        // 1h window: since = base + 40 → sirf ts>=40 wale records.
+        let since = base + 40.0;
+        let mut tr = TailReader::new_anchored(&live, since);
+        let got = tr.read_new(&live);
+        let got_ts: Vec<f64> = got
+            .iter()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["ts"]
+                    .as_f64()
+                    .unwrap()
+            })
+            .collect();
+        // 60 records in window (ts 40..99), chronological, gap-free.
+        assert_eq!(got_ts.len(), 60, "window count mismatch");
+        for (i, ts) in got_ts.iter().enumerate() {
+            assert_eq!(*ts, since + i as f64, "gap/order mismatch at {}", i);
+        }
+
+        // Ab 5 naye records append — tail se milte hain, dobara parha nahi jata.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&live)
+                .unwrap();
+            for i in 100..105u32 {
+                let rec = serde_json::json!({ "ts": base + i as f64, "in": i });
+                writeln!(f, "{}", rec).unwrap();
+            }
+            f.flush().unwrap();
+            f.sync_all().unwrap();
+        }
+        let more = tr.read_new(&live);
+        let more_ts: Vec<f64> = more
+            .iter()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["ts"]
+                    .as_f64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            more_ts,
+            vec![
+                base + 100.0,
+                base + 101.0,
+                base + 102.0,
+                base + 103.0,
+                base + 104.0
+            ]
+        );
+    }
+
+    #[test]
+    fn anchored_reader_no_match_when_window_older_than_all() {
+        let td = tempfile::TempDir::new().unwrap();
+        let live = td.path().join("ledger.jsonl");
+        let base = 1_700_000_000.0;
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&live)
+                .unwrap();
+            for i in 0..10u32 {
+                writeln!(f, "{}", serde_json::json!({ "ts": base + i as f64 })).unwrap();
+            }
+        }
+        // since file ke sab records se aage hai → kuch nahi milta.
+        let mut tr = TailReader::new_anchored(&live, base + 500.0);
+        assert!(tr.read_new(&live).is_empty());
     }
 }
