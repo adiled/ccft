@@ -17,7 +17,7 @@ mod style;
 use crate::brainrot::aggregate::{Aggregate, Baseline};
 use crate::config::Config;
 use crate::ledger_read::{
-    iter_records, ledger_files_mtime, load_top_records, newest_record_ts, parse_range, Range,
+    iter_records, ledger_files, ledger_files_mtime, newest_record_ts, parse_range, read_records_since_from, Range, TailReader,
 };
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -111,6 +111,10 @@ pub struct App {
     pub last_refresh: Instant,
     pub last_baseline_mtime: u64,
     pub last_baseline_load_ts: Option<f64>,
+    /// One TailReader per ledger file (archive oldest..live last), each
+    /// anchored at the current range's `since`. On each tick we only read
+    /// the bytes appended since the last read — never the whole file.
+    pub tail: Vec<(std::path::PathBuf, TailReader)>,
     pub running: bool,
 }
 
@@ -126,7 +130,17 @@ impl App {
             until: 0.0,
             label: "today".into(),
         });
-        let agg = Aggregate::ingest(iter_records(Some(range.since), Some(range.until)));
+        // Build one TailReader per ledger file, each anchored at the range
+        // start, so the initial aggregate only reads the in-window bytes.
+        let mut tail: Vec<(std::path::PathBuf, TailReader)> = ledger_files()
+            .into_iter()
+            .map(|p| (p.clone(), TailReader::new_anchored(&p, range.since)))
+            .collect();
+        let mut agg = Aggregate::default();
+        for (p, tr) in &mut tail {
+            let recs = read_records_since_from(tr, p, range.since, range.until);
+            agg.ingest_into(recs);
+        }
         // Baseline: full ledger, used for self-normalized z-scoring.
         let baseline_records: Vec<_> = iter_records(None, None).collect();
         let baseline = Baseline::from_records(&baseline_records);
@@ -143,14 +157,62 @@ impl App {
             last_refresh: Instant::now(),
             last_baseline_mtime: baseline_mtime,
             last_baseline_load_ts: baseline_latest_ts,
+            tail,
             running: true,
         }
     }
 
     fn refresh(&mut self) {
         let r = parse_range(self.range_preset.spec()).unwrap_or_else(|_| self.range.clone());
-        self.range = r;
-        self.agg = Aggregate::ingest(iter_records(Some(self.range.since), Some(self.range.until)));
+        let range_changed = r.since != self.range.since || r.until != self.range.until;
+
+        // Range change: re-anchor every reader at the new window start and
+        // rebuild the aggregate once from the in-window bytes only.
+        if range_changed {
+            self.range = r;
+            let since = self.range.since;
+            let until = self.range.until;
+            self.tail = ledger_files()
+                .into_iter()
+                .map(|p| (p.clone(), TailReader::new_anchored(&p, since)))
+                .collect();
+            self.agg = Aggregate::default();
+            for (p, tr) in &mut self.tail {
+                let recs = read_records_since_from(tr, p, since, until);
+                self.agg.ingest_into(recs);
+            }
+            // "all" snaps the x-axis start to the first record.
+            if self.range_preset == RangePreset::All {
+                if let Some(first) = self.agg.first_ts {
+                    self.range.since = first;
+                } else {
+                    self.range.since = self.range.until - 86400.0;
+                }
+            }
+        } else {
+            // Same window: only fold in the bytes appended since the last
+            // read — O(new), never a whole-file read.
+            let since = self.range.since;
+            let until = self.range.until;
+            let files = ledger_files();
+            // Reconcile reader set against current files so a rotated-in
+            // archive (new file mid-session) is still folded in.
+            let mut seen: std::collections::HashSet<std::path::PathBuf> =
+                self.tail.iter().map(|(p, _)| p.clone()).collect();
+            for p in &files {
+                if !seen.remove(p) {
+                    // New file — anchor and drain it.
+                    let mut tr = TailReader::new_anchored(p, since);
+                    let recs = read_records_since_from(&mut tr, p, since, until);
+                    self.agg.ingest_into(recs);
+                    self.tail.push((p.clone(), tr));
+                }
+            }
+            for (p, tr) in &mut self.tail {
+                let recs = read_records_since_from(tr, p, since, until);
+                self.agg.ingest_into(recs);
+            }
+        }
 
         // Only recompute baseline when the ledger file actually changed.
         // This avoids the heavy full-ledger computation every ~1s tick.
@@ -163,18 +225,6 @@ impl App {
             self.baseline = Baseline::from_records(&baseline_records);
             self.last_baseline_mtime = current_mtime;
             self.last_baseline_load_ts = current_latest_ts;
-        }
-
-        // For "all", snap the range start to the first actual record timestamp
-        // so the x-axis doesn't span 1970-to-now uselessly. If there are no
-        // records yet (brand-new install), fall back to "last 24h" so the
-        // chart shows a reasonable empty range instead of a 55-year span.
-        if self.range_preset == RangePreset::All {
-            if let Some(first) = self.agg.first_ts {
-                self.range.since = first;
-            } else {
-                self.range.since = self.range.until - 86400.0;
-            }
         }
 
         self.last_refresh = Instant::now();

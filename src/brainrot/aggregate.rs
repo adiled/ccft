@@ -37,41 +37,49 @@ pub struct MinuteBucket {
 impl Aggregate {
     pub fn ingest<I: IntoIterator<Item = Record>>(records: I) -> Self {
         let mut a = Aggregate::default();
+        a.ingest_into(records);
+        a
+    }
+
+    /// Fold new records into an existing aggregate — O(new), so a live TUI
+    /// can keep the range aggregate current without re-reading the whole
+    /// ledger on every tick. New records must be chronologically appended
+    /// and already range-filtered by the caller.
+    pub fn ingest_into<I: IntoIterator<Item = Record>>(&mut self, records: I) {
         for r in records {
-            a.n += 1;
-            a.r#in += r.r#in;
-            a.out += r.out;
-            a.tot += r.tot;
-            a.lat_sum += r.lat;
-            if r.lat > a.lat_max {
-                a.lat_max = r.lat;
+            self.n += 1;
+            self.r#in += r.r#in;
+            self.out += r.out;
+            self.tot += r.tot;
+            self.lat_sum += r.lat;
+            if r.lat > self.lat_max {
+                self.lat_max = r.lat;
             }
-            a.lats.push(r.lat);
+            self.lats.push(r.lat);
 
             let ts = r.ts;
-            a.first_ts = Some(a.first_ts.map_or(ts, |x| x.min(ts)));
-            a.last_ts = Some(a.last_ts.map_or(ts, |x| x.max(ts)));
+            self.first_ts = Some(self.first_ts.map_or(ts, |x| x.min(ts)));
+            self.last_ts = Some(self.last_ts.map_or(ts, |x| x.max(ts)));
 
             let model = r.model.clone().unwrap_or_else(|| "unknown".into());
-            *a.models.entry(model).or_insert(0) += 1;
+            *self.models.entry(model).or_insert(0) += 1;
             if let Some(s) = &r.sid {
-                a.sessions.insert(s.clone());
+                self.sessions.insert(s.clone());
             }
 
             let hour = ((ts as i64).rem_euclid(86400) / 3600) as u8;
-            let hb = a.by_hour.entry(hour).or_default();
+            let hb = self.by_hour.entry(hour).or_default();
             hb.n += 1;
             hb.tot += r.tot;
             hb.lat_sum += r.lat;
 
             let minute = (ts as i64) / 60;
-            let mb = a.by_minute.entry(minute).or_default();
+            let mb = self.by_minute.entry(minute).or_default();
             mb.n += 1;
             mb.tot += r.tot;
 
-            a.records.push(r);
+            self.records.push(r);
         }
-        a
     }
 
     fn gaps(&self) -> Vec<f64> {
