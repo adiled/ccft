@@ -1,7 +1,7 @@
 use crate::config::paths;
 use serde_json::Value;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default)]
@@ -17,6 +17,7 @@ pub struct Record {
     pub cr: u64,
     pub cc: u64,
     pub c_us: Option<u64>,
+    #[allow(dead_code)] // written to ledger ("ref") but not yet read back by consumers
     pub reference: Option<String>,
     pub u_ch: u64,
     pub tr_ch: u64,
@@ -58,6 +59,382 @@ impl Record {
     }
 }
 
+/// Read the last N lines from a text file.
+///
+/// Opens a fresh file handle each iteration so there is no stale BufReader
+/// state.  Reads backward in chunks until we have at least `n` complete lines,
+/// returning them newest-first.  No partial lines leak into the output.
+fn read_last_n_lines(path: &std::path::Path, n: usize) -> Vec<String> {
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let f = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let metadata = match f.metadata() {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+    let file_size = metadata.len() as u64;
+    if file_size == 0 {
+        return Vec::new();
+    }
+
+    // Accumulate bytes from oldest → newest.
+    //
+    // File layout (bytes):       [ … | OLD_CHUNK | NEW_CHUNK ]
+    //                            0         ^              ^ file_size
+    //
+    // Seek NEW_CHUNK first (near end), then OLD_CHUNK before it.
+    // By pushing new bytes AFTER existing ones we get chronological order
+    // inside `buf` so `text.lines()` yields newest-last, and we just take
+    // the last `n` and reverse them.
+    let mut buf = Vec::new();
+    let mut cursor = file_size;
+    let chunk_size = 8192u64; // 8 KB chunks
+
+    loop {
+        let read_size = std::cmp::min(chunk_size, cursor);
+        cursor = cursor.saturating_sub(read_size);
+
+        let mut reader = match fs::File::open(path) {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+        if reader.seek(std::io::SeekFrom::Start(cursor)).is_err() {
+            break;
+        }
+
+        let mut chunk = vec![0u8; read_size as usize];
+        if reader.read_exact(&mut chunk).is_err() {
+            break;
+        }
+
+        buf.extend(chunk);
+
+        // Parse UTF-8 and count non-empty lines
+        let text = String::from_utf8_lossy(&buf);
+        let lines_count = text.lines().filter(|l| !l.trim().is_empty()).count();
+
+        if lines_count >= n {
+            // We have enough data.
+            let lines: Vec<String> = text
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            // Return the last `n` lines in reverse (newest-first) order.
+            let start = lines.len().saturating_sub(n);
+            let mut result: Vec<String> = lines[start..].to_vec();
+            result.reverse();
+            return result;
+        }
+
+        if cursor == 0 {
+            break; // reached the beginning of the file
+        }
+    }
+
+    // Reached file start without getting enough lines — return what we have.
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    lines.reverse();
+    lines
+}
+
+/// Incremental tail reader for a growing JSONL ledger.
+///
+/// Reads bottom-up from the last-read byte offset and only ever returns
+/// *complete* lines appended since the previous call. A partial trailing
+/// line (writer still mid-write) is held in a pending buffer and only
+/// released once a newline closes it. This makes the accumulated output a
+/// ditto-exact copy of the file — same records, same order, same count.
+pub struct TailReader {
+    pos: u64,
+    pending: String,
+}
+
+impl TailReader {
+    pub fn new() -> Self {
+        Self {
+            pos: 0,
+            pending: String::new(),
+        }
+    }
+
+    /// Create a reader anchored at a time-window start.
+    ///
+    /// Binary-searches the ledger for the byte offset of the first record
+    /// whose `ts >= since_ts`, then tail-reads from there — so only records
+    /// inside `[since_ts, now]` are ever read, not the whole file.
+    pub fn new_anchored(path: &std::path::Path, since_ts: f64) -> Self {
+        let mut tr = Self::new();
+        match find_offset_for_ts(path, since_ts) {
+            Some(off) => tr.pos = off,
+            // No record in window — anchor past EOF so nothing is ever read.
+            None => {
+                if let Ok(f) = fs::File::open(path) {
+                    if let Ok(m) = f.metadata() {
+                        tr.pos = m.len();
+                    }
+                }
+            }
+        }
+        tr
+    }
+
+    /// Return the complete JSONL lines appended since the last call,
+    /// in file (chronological) order. Never returns partial lines.
+    ///
+    /// Bounded: reads at most `READ_CHUNK` bytes per call, so even a giant
+    /// burst append between ticks can't stall the UI for one frame — the
+    /// remainder is picked up on the next tick.
+    pub fn read_new(&mut self, path: &std::path::Path) -> Vec<String> {
+        let mut f = match fs::File::open(path) {
+            Ok(f) => f,
+            Err(_) => return Vec::new(),
+        };
+        let size = match f.metadata() {
+            Ok(m) => m.len(),
+            Err(_) => return Vec::new(),
+        };
+        if size <= self.pos {
+            return Vec::new();
+        }
+        let end = size.min(self.pos.saturating_add(READ_CHUNK));
+        if f.seek(std::io::SeekFrom::Start(self.pos)).is_err() {
+            return Vec::new();
+        }
+        let mut bytes = Vec::new();
+        if f.take(end - self.pos).read_to_end(&mut bytes).is_err() {
+            return Vec::new();
+        }
+        self.pos += bytes.len() as u64;
+
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        if !self.pending.is_empty() {
+            text = std::mem::take(&mut self.pending) + &text;
+        }
+
+        let mut out = Vec::new();
+        match text.rfind('\n') {
+            Some(idx) => {
+                // Everything through the last newline is complete.
+                out.extend(
+                    text[..=idx]
+                        .lines()
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty()),
+                );
+                self.pending = text[idx + 1..].to_string();
+            }
+            None => {
+                // Whole chunk is a partial line — hold it.
+                self.pending = text;
+            }
+        }
+        out
+    }
+
+    /// Like `read_new`, but parse each complete line straight into a
+    /// `Record`, skipping any that fail to parse or are out of range.
+    pub fn read_new_records(&mut self, path: &std::path::Path) -> Vec<Record> {
+        let mut out = Vec::new();
+        for line in self.read_new(path) {
+            let v: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let Some(r) = Record::from_value(&v) else {
+                continue;
+            };
+            if r.ts < 1_262_304_000.0 {
+                continue;
+            }
+            out.push(r);
+        }
+        out
+    }
+}
+
+/// Max bytes a single TailReader::read_new call consumes from the file.
+const READ_CHUNK: u64 = 256 * 1024;
+
+/// Max bytes each binary-search probe reads from a seek point.
+const SEEK_CHUNK: u64 = 64 * 1024;
+
+/// Byte offset of the first record with `ts >= since_ts`, aligned to a line
+/// start (never mid-line). Returns `None` when no record is in window.
+///
+/// Records are appended chronologically and `ts` is non-decreasing, so this
+/// is a monotone predicate → binary search over byte offsets. Every probe
+/// reads at most `SEEK_CHUNK` bytes, so this is O(log n) seeks, not a
+/// full-file read.
+fn find_offset_for_ts(path: &std::path::Path, since_ts: f64) -> Option<u64> {
+    let f = fs::File::open(path).ok()?;
+    let size = f.metadata().ok()?.len();
+    if size == 0 {
+        return None;
+    }
+
+    // Newest record ts — if already older than the window, nothing matches.
+    if let Some(ts) = last_line_ts(&f, size) {
+        if ts < since_ts {
+            return None;
+        }
+    }
+
+    // Earliest record ts — if already inside the window, offset 0 matches.
+    if let Some(ts) = line_ts_at(&f, 0, size) {
+        if ts >= since_ts {
+            return Some(0);
+        }
+    }
+
+    // left = a line start with ts < since, right = a line start with ts >= since.
+    let mut left = 0u64;
+    let mut right = last_line_start(&f, size)?;
+
+    loop {
+        // Boundary found when right is the line immediately after left.
+        if let Some(nxt) = next_line_start(&f, left, size) {
+            if nxt == right {
+                return Some(right);
+            }
+        }
+
+        let mid = (left + right) / 2;
+        let start = match next_line_start(&f, mid, size) {
+            Some(s) => s,
+            None => return Some(right),
+        };
+        let ts = match line_ts_at(&f, start, size) {
+            Some(t) => t,
+            None => return Some(right),
+        };
+
+        if ts < since_ts {
+            // This line predates the window — boundary is after it.
+            left = start;
+        } else if start < right {
+            // In-window line before current right — narrow down.
+            right = start;
+        } else {
+            // Probe hit/passed right with no rightward progress.
+            // Only the final few lines remain — scan forward from left.
+            return first_in_window(&f, left, size, since_ts);
+        }
+    }
+}
+
+/// First line start after `from` whose ts >= since_ts (linear, small window).
+fn first_in_window(f: &fs::File, from: u64, size: u64, since_ts: f64) -> Option<u64> {
+    let mut cur = from;
+    loop {
+        let nxt = match next_line_start(f, cur, size) {
+            Some(n) => n,
+            None => return None,
+        };
+        let ts = match line_ts_at(f, nxt, size) {
+            Some(t) => t,
+            None => return None,
+        };
+        if ts >= since_ts {
+            return Some(nxt);
+        }
+        cur = nxt;
+    }
+}
+
+/// Read at most `SEEK_CHUNK` bytes from `pos` (or to EOF), returning the text.
+fn read_chunk(f: &fs::File, pos: u64, size: u64) -> Option<String> {
+    let mut r = std::io::BufReader::new(f.try_clone().ok()?);
+    let end = size.min(pos.saturating_add(SEEK_CHUNK));
+    r.seek(std::io::SeekFrom::Start(pos)).ok()?;
+    let mut buf = Vec::new();
+    let mut take = r.take(end - pos);
+    take.read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Timestamp of the first non-empty line at/after byte `pos` (bounded chunk).
+fn line_ts_at(f: &fs::File, pos: u64, size: u64) -> Option<f64> {
+    let s = read_chunk(f, pos, size)?;
+    let line = s.lines().find(|l| !l.trim().is_empty())?;
+    let v = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+    v.get("ts")?.as_f64()
+}
+
+/// Timestamp of the last non-empty line in the file (bounded tail chunk).
+fn last_line_ts(f: &fs::File, size: u64) -> Option<f64> {
+    let s = read_chunk(f, size.saturating_sub(SEEK_CHUNK), size)?;
+    let line = s.lines().rev().find(|l| !l.trim().is_empty())?;
+    let v = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+    v.get("ts")?.as_f64()
+}
+
+/// Byte offset of the start of the last complete line in the file.
+fn last_line_start(f: &fs::File, size: u64) -> Option<u64> {
+    let base = size.saturating_sub(SEEK_CHUNK);
+    let s = read_chunk(f, base, size)?;
+    s.rfind('\n')
+        .map(|i| base + i as u64 + 1)
+}
+
+/// Byte offset of the first complete line starting strictly after `pos`
+/// (skips any partial first line). `None` if only a trailing partial line
+/// remains — i.e. no complete line after `pos`.
+fn next_line_start(f: &fs::File, pos: u64, size: u64) -> Option<u64> {
+    let s = read_chunk(f, pos, size)?;
+    s.find('\n').map(|i| pos + i as u64 + 1)
+}
+
+/// Load exactly the top-N (newest-first) records from the ledger,
+/// without parsing the entire file.
+/// Load exactly the top-N (newest-first) records from the ledger,
+/// without parsing the entire file.
+pub fn load_top_records(n: usize) -> Vec<Record> {
+    let files = ledger_files();
+    if files.is_empty() {
+        return Vec::new();
+    }
+
+    // Check newest file first (live, then archive reversed)
+    for file in files.iter().rev() {
+        let lines = read_last_n_lines(file, n * 2);
+        let mut records = Vec::with_capacity(n);
+        for raw_line in lines {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let v: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let r = match Record::from_value(&v) {
+                Some(r) => r,
+                None => continue,
+            };
+            if r.ts < 1_262_304_000.0 {
+                continue;
+            }
+            records.push(r);
+            if records.len() >= n {
+                return records;
+            }
+        }
+    }
+
+    Vec::new()
+}
+
 pub fn iter_records(since: Option<f64>, until: Option<f64>) -> impl Iterator<Item = Record> {
     let files = ledger_files();
     files.into_iter().flat_map(move |p| {
@@ -72,7 +449,7 @@ pub fn iter_records(since: Option<f64>, until: Option<f64>) -> impl Iterator<Ite
             if line.is_empty() {
                 continue;
             }
-            let v: Value = match serde_json::from_str(line) {
+            let v: Value = match serde_json::from_str(&line) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
@@ -98,7 +475,62 @@ pub fn iter_records(since: Option<f64>, until: Option<f64>) -> impl Iterator<Ite
     })
 }
 
-fn ledger_files() -> Vec<PathBuf> {
+/// Return the mtime (in seconds since epoch) of all ledger files combined.
+/// For caching baseline: only recompute when the latest record's timestamp
+/// changes, meaning new data was appended.
+pub fn ledger_files_mtime() -> u64 {
+    let files = ledger_files();
+    files
+        .iter()
+        .filter_map(|p| {
+            p.metadata().ok().map(|m| {
+                m.modified()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or(std::time::Duration::ZERO)
+                    .as_secs() as i64
+            })
+        })
+        .max()
+        .unwrap_or(0) as u64
+}
+
+/// Return the newest record's timestamp, used to detect new ledger entries.
+pub fn newest_record_ts() -> Option<f64> {
+    let files = ledger_files();
+    // Check from newest file first (live then archive reversed)
+    for file in files.iter().rev() {
+        let f = match fs::File::open(file) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let reader = BufReader::new(f);
+        for line in reader
+            .lines()
+            .map_while(Result::ok)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let v: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if let Some(v) = v.as_object() {
+                if let Some(ts) = v.get("ts").and_then(Value::as_f64) {
+                    return Some(ts);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn ledger_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
     let archive = paths::ledger()
         .parent()
@@ -124,6 +556,64 @@ fn ledger_files() -> Vec<PathBuf> {
         files.push(live);
     }
     files
+}
+
+/// Read all complete records with `ts >= since_ts` from the ledger (all
+/// files, chronological), using the anchored tail reader. One-shot helper
+/// for non-TUI callers; the TUI keeps a live TailReader per file instead.
+/// Drain an anchored `TailReader` to completion, returning the complete
+/// records in `[since, until]` (chronological). Used by the live TUI to
+/// (re)build the range aggregate from only the in-window bytes.
+pub fn read_records_since_from(
+    tr: &mut TailReader,
+    path: &std::path::Path,
+    since: f64,
+    until: f64,
+) -> Vec<Record> {
+    let mut out = Vec::new();
+    loop {
+        for r in tr.read_new_records(path) {
+            if r.ts >= since && r.ts <= until {
+                out.push(r);
+            }
+        }
+        let size = fs::metadata(path).ok().map(|m| m.len()).unwrap_or(0);
+        if size <= tr.pos {
+            break; // file exhausted
+        }
+        let before = tr.pos;
+        let _ = tr.read_new_records(path);
+        if tr.pos == before {
+            break; // no progress (pending partial line) — avoid spin
+        }
+    }
+    out
+}
+
+#[allow(dead_code)] // one-shot convenience: anchored drain from since_ts to EOF
+pub fn read_records_since(since_ts: f64) -> Vec<Record> {
+    let mut out = Vec::new();
+    for path in ledger_files() {
+        let mut tr = TailReader::new_anchored(&path, since_ts);
+        loop {
+            let recs = tr.read_new_records(&path);
+            let n = recs.len();
+            out.extend(recs);
+            if n == 0 {
+                let size = fs::metadata(&path).ok().map(|m| m.len()).unwrap_or(0);
+                if size <= tr.pos {
+                    break; // file exhausted
+                }
+                // A partial line is pending; loop once more to close it.
+                let before = tr.pos;
+                let _ = tr.read_new_records(&path);
+                if tr.pos == before {
+                    break; // no progress — avoid infinite loop
+                }
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -363,4 +853,269 @@ pub fn percentile(values: &mut [u64], p: f64) -> f64 {
     let lo = values[f] as f64;
     let hi = values[c] as f64;
     lo + (hi - lo) * (k - f as f64)
+}
+
+// ─── Integration test ─────────────────────────────────────────────────────────
+//
+// Black-box concurrency test: ek thread ledger pe records dalta hai (producer),
+// doosra thread TailReader se apni copy banata hai (consumer). End mein copy ko
+// asal file se ditto compare karte hain — same records, same order, same count.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn concurrent_producer_consumer_copy_matches_file_ditto() {
+        let td = tempfile::TempDir::new().unwrap();
+        let live = td.path().join("ledger.jsonl");
+        let live = live.clone();
+
+        const N: u32 = 300;
+
+        // Producer thread: tana-tan records dalta hai, flush karta hai.
+        let w_live = live.clone();
+        let (tx, rx) = mpsc::channel::<()>();
+        let writer = std::thread::spawn(move || {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&w_live)
+                .unwrap();
+            for i in 0..N {
+                let ts = 1_700_000_000.0 + i as f64;
+                let rec = serde_json::json!({
+                    "ts": ts,
+                    "te": ts + 1.0,
+                    "in": i,
+                    "out": i * 2,
+                    "model": "claude-3",
+                });
+                writeln!(f, "{}", rec).unwrap();
+                // Writer ko aaram se likhne do — partial lines, interleaving.
+                std::thread::sleep(Duration::from_micros(50));
+            }
+            f.flush().unwrap();
+            f.sync_all().unwrap();
+            tx.send(()).unwrap();
+        });
+
+        // Consumer thread: TailReader se apni copy banata hai.
+        let r_live = live.clone();
+        let reader = std::thread::spawn(move || {
+            let mut tr = TailReader::new();
+            let mut copy: Vec<String> = Vec::new();
+            loop {
+                copy.extend(tr.read_new(&r_live));
+                match rx.try_recv() {
+                    Ok(()) => {
+                        // Writer done — ek aakhri read se baaki partial line pakdo.
+                        copy.extend(tr.read_new(&r_live));
+                        break;
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(1)),
+                }
+            }
+            copy
+        });
+
+        writer.join().unwrap();
+        let copy = reader.join().unwrap();
+
+        // Asal file (source of truth) se lines nikaalo.
+        let file_lines: Vec<String> = fs::read_to_string(&live)
+            .unwrap()
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        // Ditto check — same records, same order, same length, same size.
+        assert_eq!(
+            copy.len(),
+            file_lines.len(),
+            "record count mismatch: reader {} vs file {}",
+            copy.len(),
+            file_lines.len()
+        );
+        assert_eq!(
+            copy, file_lines,
+            "reader's copy != actual file (order/content mismatch)"
+        );
+
+        // Har record valid JSON aur valid ts hota hai (no partial/corrupt line).
+        for (i, line) in copy.iter().enumerate() {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let ts = v.get("ts").unwrap().as_f64().unwrap();
+            assert!(
+                ts >= 1_700_000_000.0 && ts < 1_700_000_000.0 + N as f64,
+                "record {} out-of-range ts: {}",
+                i,
+                ts
+            );
+        }
+    }
+
+    #[test]
+    fn anchored_reader_reads_only_window_from_ts_offset() {
+        let td = tempfile::TempDir::new().unwrap();
+        let live = td.path().join("ledger.jsonl");
+        let base = 1_700_000_000.0;
+
+        // 100 records, ts base..base+99 (chronological).
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&live)
+                .unwrap();
+            for i in 0..100u32 {
+                let rec = serde_json::json!({ "ts": base + i as f64, "in": i });
+                writeln!(f, "{}", rec).unwrap();
+            }
+            f.flush().unwrap();
+            f.sync_all().unwrap();
+        }
+
+        // 1h window: since = base + 40 → sirf ts>=40 wale records.
+        let since = base + 40.0;
+        let mut tr = TailReader::new_anchored(&live, since);
+        let got = tr.read_new(&live);
+        let got_ts: Vec<f64> = got
+            .iter()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["ts"]
+                    .as_f64()
+                    .unwrap()
+            })
+            .collect();
+        // 60 records in window (ts 40..99), chronological, gap-free.
+        assert_eq!(got_ts.len(), 60, "window count mismatch");
+        for (i, ts) in got_ts.iter().enumerate() {
+            assert_eq!(*ts, since + i as f64, "gap/order mismatch at {}", i);
+        }
+
+        // Ab 5 naye records append — tail se milte hain, dobara parha nahi jata.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&live)
+                .unwrap();
+            for i in 100..105u32 {
+                let rec = serde_json::json!({ "ts": base + i as f64, "in": i });
+                writeln!(f, "{}", rec).unwrap();
+            }
+            f.flush().unwrap();
+            f.sync_all().unwrap();
+        }
+        let more = tr.read_new(&live);
+        let more_ts: Vec<f64> = more
+            .iter()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["ts"]
+                    .as_f64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            more_ts,
+            vec![
+                base + 100.0,
+                base + 101.0,
+                base + 102.0,
+                base + 103.0,
+                base + 104.0
+            ]
+        );
+    }
+
+    #[test]
+    fn anchored_reader_no_match_when_window_older_than_all() {
+        let td = tempfile::TempDir::new().unwrap();
+        let live = td.path().join("ledger.jsonl");
+        let base = 1_700_000_000.0;
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&live)
+                .unwrap();
+            for i in 0..10u32 {
+                writeln!(f, "{}", serde_json::json!({ "ts": base + i as f64 })).unwrap();
+            }
+        }
+        // since file ke sab records se aage hai → kuch nahi milta.
+        let mut tr = TailReader::new_anchored(&live, base + 500.0);
+        assert!(tr.read_new(&live).is_empty());
+    }
+    #[test]
+    fn incremental_anchored_fold_matches_full_rebuild() {
+        // The live TUI path: anchor a TailReader at the window start, then
+        // fold in new records tick-by-tick. The result must equal a full
+        // re-read of the whole file — the UI stays live AND correct.
+        let td = tempfile::TempDir::new().unwrap();
+        let live = td.path().join("ledger.jsonl");
+        let base = 1_700_000_000.0;
+        let since = base + 40.0;
+        let until = base + 200.0;
+
+        // First batch: records 0..99.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&live)
+                .unwrap();
+            for i in 0..100u32 {
+                let rec = serde_json::json!({ "ts": base + i as f64, "in": i, "out": i * 2 });
+                writeln!(f, "{}", rec).unwrap();
+            }
+            f.flush().unwrap();
+            f.sync_all().unwrap();
+        }
+
+        let mut tr = TailReader::new_anchored(&live, since);
+        let mut agg: Vec<serde_json::Value> = Vec::new();
+
+        // Drain initial window (ts 40..99 → 60 records).
+        let first = read_records_since_from(&mut tr, &live, since, until);
+        agg.extend(first.iter().map(|r| serde_json::json!({ "ts": r.ts, "in": r.r#in, "out": r.out })));
+
+        // Second batch: records 100..199 appended "live" — fold incrementally.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&live)
+                .unwrap();
+            for i in 100..200u32 {
+                let rec = serde_json::json!({ "ts": base + i as f64, "in": i, "out": i * 2 });
+                writeln!(f, "{}", rec).unwrap();
+            }
+            f.flush().unwrap();
+            f.sync_all().unwrap();
+        }
+        let more = read_records_since_from(&mut tr, &live, since, until);
+        agg.extend(more.iter().map(|r| serde_json::json!({ "ts": r.ts, "in": r.r#in, "out": r.out })));
+
+        // Full rebuild: parse the whole temp file from scratch, filtered to
+        // the window — the ground truth the incremental path must match.
+        let full: Vec<serde_json::Value> = fs::read_to_string(&live)
+            .unwrap()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+            .filter(|v| {
+                let ts = v["ts"].as_f64().unwrap();
+                ts >= since && ts <= until
+            })
+            .map(|v| serde_json::json!({ "ts": v["ts"], "in": v["in"], "out": v["out"] }))
+            .collect();
+
+        assert_eq!(agg.len(), full.len(), "incremental vs full count");
+        assert_eq!(agg, full, "incremental fold != full rebuild (order/content)");
+    }
 }

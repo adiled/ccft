@@ -34,7 +34,6 @@ pub const SUBTLE: Color = Color::Rgb(0x6b, 0x72, 0x80); // dim body, separators
 // Border accent: a muted, hue-preserved pink used for panel chrome only.
 // Distinct from the bright brand PINK so the chrome reads as a translucent
 // seam rather than a brand statement.
-pub const SEAM: Color = Color::Rgb(0x7a, 0x33, 0x5c); // ~PINK at 50% brightness
 
 // Frame background — RGB(2, 5, 14) / #02050E. The exact substrate the frame
 // is painted with; energy-fade math lerps toward this so dim cells dissolve
@@ -42,12 +41,6 @@ pub const SEAM: Color = Color::Rgb(0x7a, 0x33, 0x5c); // ~PINK at 50% brightness
 pub const BG: Color = Color::Rgb(0x02, 0x05, 0x0e);
 
 // Backward-compatibility aliases used by panels written before the repaint.
-pub const MAGENTA: Color = PINK;
-pub const GREEN: Color = LIME;
-pub const YELLOW: Color = GOLD;
-pub const RED: Color = PINK;
-pub const GHOST: Color = GREY;
-
 /// Signal tile color by sigma-bucket severity.
 pub fn signal_color(bucket: u8) -> Color {
     match bucket {
@@ -94,10 +87,6 @@ pub fn alert() -> Style {
 }
 
 pub fn key_hint() -> Style {
-    Style::default().fg(PINK)
-}
-
-pub fn active_chip() -> Style {
     Style::default().fg(PINK)
 }
 
@@ -274,17 +263,6 @@ fn paint_corner_accents(buf: &mut Buffer, area: Rect) {
 /// Generic energized-line painter for any 1D path of cells. Used by tile
 /// dividers and other elements that want the perimeter rail look but NOT
 /// the substrate halo (those would bleed into adjacent content).
-pub fn paint_signal(buf: &mut Buffer, cells: &[(u16, u16, char)], seed: &str) {
-    let n = cells.len();
-    if n < 4 {
-        return;
-    }
-    let t = time_offset();
-    let hue = compute_hue_field(n, seed);
-    let (luminance, is_burst) = compute_perimeter_luminance(cells, seed, t);
-    paint_cells_with_signal(buf, cells, &hue, &luminance, &is_burst, seed);
-}
-
 /// Panel border = perimeter signal + a single subliminal substrate halo.
 /// All variation is one weighted-random luminance + a slow hue field.
 fn paint_panel_border(buf: &mut Buffer, area: Rect, seed: &str) {
@@ -671,40 +649,13 @@ fn time_offset() -> f32 {
 /// Paint a rectangular signal-border around `area` — same thematics as
 /// the panel chrome. Used for the active range chip's outline and any
 /// other small bounded element that wants the full energized border.
-pub fn signal_rect(buf: &mut Buffer, area: Rect, seed: &str) {
-    if area.width < 2 || area.height < 2 {
-        return;
-    }
-    let cells = collect_perimeter(area);
-    paint_signal(buf, &cells, seed);
-}
-
 /// Solid-color rounded-corner rectangle. Same geometry as `signal_rect`
 /// (rounded `╭ ╮ ╰ ╯` corners + `─ │` edges) but painted in one uniform
 /// color. Used for elements that want crisp button-style edges instead
 /// of the energized streaky chrome — e.g. the active range chip.
-pub fn solid_rect(buf: &mut Buffer, area: Rect, color: Color) {
-    if area.width < 2 || area.height < 2 {
-        return;
-    }
-    let cells = collect_perimeter(area);
-    let style = Style::default().fg(color);
-    for &(x, y, glyph) in &cells {
-        set_char(buf, x, y, glyph, style);
-    }
-}
-
 /// Paint a vertical divider strip at column `x`, from `y` for `height`
 /// cells. Same signal thematics as panel borders so dividers feel like
 /// they belong to the same chrome family.
-pub fn signal_divider_v(buf: &mut Buffer, x: u16, y: u16, height: u16, seed: &str) {
-    if height < 2 {
-        return;
-    }
-    let cells: Vec<(u16, u16, char)> = (0..height).map(|i| (x, y + i, '│')).collect();
-    paint_signal(buf, &cells, seed);
-}
-
 /// Walk the panel perimeter clockwise starting at top-left, returning the
 /// cell coordinates and default glyph for each step. The returned list is
 /// what the energy/hue signals are sampled against; treating it as a single
@@ -776,10 +727,6 @@ fn cell_hash(label: &str, x: u16, y: u16) -> u64 {
 }
 
 /// Take 16 bits of the hash starting at `shift`, scale to [0, 1).
-fn roll(h: u64, shift: u32) -> f32 {
-    ((h.wrapping_shr(shift)) & 0xFFFF) as f32 / 0x1_0000_u32 as f32
-}
-
 /// Multiply an RGB color by a brightness factor. Channels clamp on the way
 /// down (since we only scale by ≤ 1.0). Hue is preserved.
 fn scale_color(c: Color, factor: f32) -> Color {
@@ -839,31 +786,3 @@ fn set_char(buf: &mut Buffer, x: u16, y: u16, ch: char, style: Style) {
     cell.set_style(style);
 }
 
-/// Outlined pink chip — used for the active range preset. Single-line: just
-/// brackets left/right; multi-line: thin pink rectangle.
-pub fn outline_rect(f: &mut Frame, area: Rect) {
-    if area.width < 2 || area.height < 1 {
-        return;
-    }
-    let buf = f.buffer_mut();
-    let pink = Style::default().fg(PINK);
-    let right = area.x + area.width - 1;
-    let bottom = area.y + area.height - 1;
-    if area.height == 1 {
-        set_char(buf, area.x, area.y, '│', pink);
-        set_char(buf, right, area.y, '│', pink);
-    } else {
-        set_char(buf, area.x, area.y, '┌', pink);
-        set_char(buf, right, area.y, '┐', pink);
-        set_char(buf, area.x, bottom, '└', pink);
-        set_char(buf, right, bottom, '┘', pink);
-        for x in (area.x + 1)..right {
-            set_char(buf, x, area.y, '─', pink);
-            set_char(buf, x, bottom, '─', pink);
-        }
-        for y in (area.y + 1)..bottom {
-            set_char(buf, area.x, y, '│', pink);
-            set_char(buf, right, y, '│', pink);
-        }
-    }
-}

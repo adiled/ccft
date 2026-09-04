@@ -10,7 +10,10 @@ use ratatui::text::Span;
 use ratatui::widgets::{Cell, Row, Table};
 use ratatui::Frame;
 
-pub fn render(f: &mut Frame, area: Rect, app: &App) {
+/// How many records to fetch from the file for the ledger table.
+const LEDGER_TABLE_MAX_ROWS: usize = 320;
+
+pub fn render(f: &mut Frame, area: Rect, _app: &App) {
     let inner = style::panel(f, area, "ledger");
     let local = crate::tui::style::local_offset();
 
@@ -21,12 +24,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         Cell::from(Span::styled("lat", style::dim())),
     ]);
 
-    let mut recs = app.agg.records.clone();
-    recs.sort_by(|a, b| b.ts.partial_cmp(&a.ts).unwrap_or(std::cmp::Ordering::Equal));
-
     // Tight: only header row reserved (1 row), all remaining rows are data.
     // No bottom margin.
     let max_rows = inner.height.saturating_sub(1) as usize;
+
+    // Fetch directly from file — skips any app.agg.records and avoids
+    // cloning the whole table.  load_top_records reads only the tail end
+    // of each ledger file so even multi-million-line ledgers never block.
+    let recs = crate::ledger_read::load_top_records(max_rows.max(LEDGER_TABLE_MAX_ROWS));
 
     let rows: Vec<Row> = recs
         .iter()
