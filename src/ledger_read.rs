@@ -17,6 +17,7 @@ pub struct Record {
     pub cr: u64,
     pub cc: u64,
     pub c_us: Option<u64>,
+    #[allow(dead_code)] // written to ledger ("ref") but not yet read back by consumers
     pub reference: Option<String>,
     pub u_ch: u64,
     pub tr_ch: u64,
@@ -589,6 +590,7 @@ pub fn read_records_since_from(
     out
 }
 
+#[allow(dead_code)] // one-shot convenience: anchored drain from since_ts to EOF
 pub fn read_records_since(since_ts: f64) -> Vec<Record> {
     let mut out = Vec::new();
     for path in ledger_files() {

@@ -7,8 +7,6 @@ pub fn label() -> String {
     Config::load().service_label
 }
 
-pub const PRODUCT_NAME: &str = "ccft";
-
 pub fn unit_path() -> PathBuf {
     platform::unit_path()
 }

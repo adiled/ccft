@@ -82,11 +82,6 @@ impl Aggregate {
         }
     }
 
-    fn gaps(&self) -> Vec<f64> {
-        let mut ts: Vec<f64> = self.records.iter().map(|r| r.ts).collect();
-        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        ts.windows(2).map(|w| w[1] - w[0]).collect()
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -574,6 +569,7 @@ fn stddev(xs: &[f64], m: f64) -> f64 {
 // Baseline (user fingerprint).
 
 #[derive(Default, Debug, Clone)]
+#[allow(dead_code)] // fingerprint fields are schema for future signals; computed but not yet read
 pub struct Baseline {
     pub n_records: u64,
     pub n_sessions: usize,
@@ -621,10 +617,6 @@ pub struct Baseline {
 }
 
 impl Baseline {
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
     pub fn from_records(records: &[Record]) -> Self {
         if records.is_empty() {
             return Self::default();

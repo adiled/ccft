@@ -145,10 +145,6 @@ fn unsource_from_rcs() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub fn apply() -> Result<(), Box<dyn std::error::Error>> {
-    apply_with(false)
-}
-
 pub fn apply_with(dev: bool) -> Result<(), Box<dyn std::error::Error>> {
     ensure_ca()?;
     let cfg = cfg_for(dev);
@@ -191,10 +187,6 @@ pub fn apply_with(dev: bool) -> Result<(), Box<dyn std::error::Error>> {
     println!("Restart any running agents (pi, claude, opencode) so they");
     println!("re-pick-up the shell env / config. New terminals inherit it automatically.");
     Ok(())
-}
-
-pub fn revoke() -> Result<(), Box<dyn std::error::Error>> {
-    revoke_with(false)
 }
 
 pub fn revoke_with(_dev: bool) -> Result<(), Box<dyn std::error::Error>> {
