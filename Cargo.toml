@@ -16,6 +16,10 @@ edition = "2021"
 license = "MIT"
 description = "ccft - an agentic self improvement tool"
 
+[lib]
+name = "ccft"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ccft"
 path = "src/main.rs"
