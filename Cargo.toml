@@ -1,3 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "crates/ccft-ledger",
+    "crates/ccft-session",
+    "crates/ccft-lex",
+    "crates/ccft-brainrot",
+    "crates/ccft-sse",
+]
+
 [package]
 name = "ccft"
 version = "1.10.0"
@@ -28,6 +39,13 @@ dashmap = "6"
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.30"
 crossterm = "0.29"
+
+# workspace crates
+ccft-ledger = { path = "crates/ccft-ledger" }
+ccft-session = { path = "crates/ccft-session" }
+ccft-lex = { path = "crates/ccft-lex" }
+ccft-brainrot = { path = "crates/ccft-brainrot" }
+ccft-sse = { path = "crates/ccft-sse" }
 
 [profile.release]
 opt-level = 3
