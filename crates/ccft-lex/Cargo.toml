@@ -1,0 +1,8 @@
+[package]
+name = "ccft-lex"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pure text fingerprinting: lexical stats (TTR/function-word/bigram entropy), novelty, system-block stripping"
+
+[dependencies]

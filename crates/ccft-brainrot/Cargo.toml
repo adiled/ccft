@@ -1,0 +1,13 @@
+[package]
+name = "ccft-brainrot"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Agentic turn classification + baseline fingerprinting: EM gap mixture, bot/driver scores"
+
+[dependencies]
+ccft-ledger = { path = "../ccft-ledger" }
+time = { version = "0.3", features = ["local-offset", "macros", "parsing", "formatting"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -326,6 +326,11 @@ name = "ccft"
 version = "1.10.0"
 dependencies = [
  "bytes",
+ "ccft-brainrot",
+ "ccft-ledger",
+ "ccft-lex",
+ "ccft-session",
+ "ccft-sse",
  "clap",
  "crossterm",
  "dashmap",
@@ -344,6 +349,48 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ccft-brainrot"
+version = "0.1.0"
+dependencies = [
+ "ccft-ledger",
+ "tempfile",
+ "time",
+]
+
+[[package]]
+name = "ccft-ledger"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "time",
+]
+
+[[package]]
+name = "ccft-lex"
+version = "0.1.0"
+
+[[package]]
+name = "ccft-session"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "hyper",
+ "serde_json",
+ "sha1 0.10.6",
+]
+
+[[package]]
+name = "ccft-sse"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "hyper",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::ledger;
 use crate::session;
-use crate::sse_tap::SseTap;
+use crate::sse_tap::tap;
 use bytes::Bytes;
 use dashmap::DashMap;
 use http_body_util::{BodyDataStream, BodyExt};
@@ -865,7 +865,7 @@ impl HttpHandler for CcftHandler {
             let (parts, body) = res.into_parts();
 
             if ct.contains("text/event-stream") {
-                let tapped = SseTap::new(body, label, meta);
+                let tapped = tap(body, label, meta);
                 let stream = BodyDataStream::new(tapped);
                 Response::from_parts(parts, Body::from_stream(stream))
             } else {
@@ -879,7 +879,7 @@ impl HttpHandler for CcftHandler {
                      .map(|c| c.to_bytes())
                      .unwrap_or_default();
                 debug!("[ccft] non-stream collected {} bytes", bytes.len());
-                let mut tapped = SseTap::new(Body::empty(), label, meta);
+                let mut tapped = tap(Body::empty(), label, meta);
                 tapped.tap_bytes(&bytes);
                 Response::from_parts(parts, Body::from(bytes))
             }
