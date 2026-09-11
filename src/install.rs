@@ -181,6 +181,13 @@ fn persist_service_label(
 }
 
 pub fn uninstall() -> Result<(), Box<dyn std::error::Error>> {
+    // 0. Revoke trust FIRST so no shell / agent is left pointing at a proxy
+    //    process that is about to disappear. Skipping this is what previously
+    //    left HTTPS_PROXY/HTTP_PROXY + shell-RC sourcing aimed at a deleted
+    //    flytrap — every agent's traffic then failed (looks like "no internet").
+    trust::revoke_with(false)?;
+    println!("✓ trust revoked — proxy env + shell RC sourcing removed");
+
     if service::supported() {
         service::unregister()?;
         if paths::is_isolated() {

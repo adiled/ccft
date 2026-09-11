@@ -104,11 +104,11 @@ fn sourcing_line(env: &PathBuf) -> String {
 }
 
 fn shell_rc_files() -> Vec<PathBuf> {
-    let home = paths::home();
+    let base = paths::root(); // isolated (CCFT_PREFIX) installs operate under the prefix
     SHELL_RCS
         .iter()
         .filter_map(|name| {
-            let p = home.join(name);
+            let p = base.join(name);
             p.is_file().then(|| p)
         })
         .collect()
@@ -153,7 +153,7 @@ pub fn apply_with(dev: bool) -> Result<(), Box<dyn std::error::Error>> {
     let env = write_env_file(&cfg)?;
     source_into_rcs(&env)?;
 
-    let claude_json = paths::home().join(".claude.json");
+    let claude_json = paths::root().join(".claude.json");
     let mut data: Value = if claude_json.exists() {
         let raw = fs::read_to_string(&claude_json)?;
         let bak = claude_json.with_extension("json.bak");
@@ -198,7 +198,7 @@ pub fn revoke_with(_dev: bool) -> Result<(), Box<dyn std::error::Error>> {
         println!("✓ removed {}", env.display());
     }
 
-    let claude_json = paths::home().join(".claude.json");
+    let claude_json = paths::root().join(".claude.json");
     if claude_json.exists() {
         let raw = fs::read_to_string(&claude_json)?;
         let bak = claude_json.with_extension("json.bak");

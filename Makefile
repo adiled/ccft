@@ -14,7 +14,7 @@ BUILT_BIN := target/$(TARGET)/$(BIN_NAME)
 INSTALL_DIR := $(HOME)/.local/bin
 INSTALL_BIN := $(INSTALL_DIR)/$(BIN_NAME)
 
-.PHONY: help check clippy build dev install uninstall start stop status restart trust logs clean test smoke
+.PHONY: help check clippy build dev install update uninstall start stop status restart trust logs clean test smoke
 
 # Default target — fastest correctness signal during dev.
 .DEFAULT_GOAL := check
@@ -30,6 +30,7 @@ help:
 	@echo "  make build       compile a release binary at $(BUILT_BIN)"
 	@echo "  make dev         set up + register the parallel dev service (com.ccft.dev)"
 	@echo "  make install     build + ./ccft install"
+	@echo "  make update      ./ccft update (cargo install ccft --force, re-apply trust, restart)"
 	@echo "  make uninstall   ./ccft uninstall"
 	@echo ""
 	@echo "lifecycle:"
@@ -58,6 +59,9 @@ dev: build
 
 install: build
 	$(BUILT_BIN) install
+
+update:
+	"$(INSTALL_BIN)" update
 
 uninstall:
 	@if [ -x "$(INSTALL_BIN)" ]; then \

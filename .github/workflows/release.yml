@@ -1,5 +1,11 @@
 name: Release
 
+# Publish ccft to crates.io in dependency order. No GitHub binary downloadables:
+# `cargo install ccft` builds from source, so there are no unsigned-binary /
+# Gatekeeper "unverified" issues on macOS (the previous curl-a-binary path is
+# gone). Tag pushes also open a source-only GitHub release (notes + tarball)
+# for changelog visibility, but it carries no executable artifacts.
+
 on:
   push:
     tags: ["v*"]
@@ -8,92 +14,48 @@ permissions:
   contents: write
 
 jobs:
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Add targets
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-macos-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-macos-
-      - name: Build aarch64
-        run: cargo build --release --target aarch64-apple-darwin
-      - name: Build x86_64
-        run: cargo build --release --target x86_64-apple-darwin
-      - name: Lipo + bundle
-        run: |
-          mkdir -p out
-          lipo -create -output out/ccft-macos-universal \
-            target/aarch64-apple-darwin/release/ccft \
-            target/x86_64-apple-darwin/release/ccft
-          chmod +x out/ccft-macos-universal
-          file out/ccft-macos-universal
-          cp out/ccft-macos-universal out/ccft
-          cp LICENSE NOTICE README.md out/
-          tar -czvf out/ccft-macos-universal.tar.gz -C out ccft LICENSE NOTICE README.md
-          rm out/ccft
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos
-          path: |
-            out/ccft-macos-universal
-            out/ccft-macos-universal.tar.gz
-
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-linux-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-linux-
-      - name: Build
-        run: cargo build --release
-      - name: Bundle
-        run: |
-          mkdir -p out
-          cp target/release/ccft out/ccft-linux-x86_64
-          chmod +x out/ccft-linux-x86_64
-          cp out/ccft-linux-x86_64 out/ccft
-          cp LICENSE NOTICE README.md out/
-          tar -czvf out/ccft-linux-x86_64.tar.gz -C out ccft LICENSE NOTICE README.md
-          rm out/ccft
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux
-          path: |
-            out/ccft-linux-x86_64
-            out/ccft-linux-x86_64.tar.gz
-
   publish:
-    needs: [build-macos, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-      - name: Create release
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Publish in dependency order — each crate's `path` deps become `version`
+      # deps in the package, and cargo resolves them against crates.io, so the
+      # dependency crates must land first.
+      - name: Publish ccft-ledger
+        run: cargo publish --package ccft-ledger --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish ccft-lex
+        run: cargo publish --package ccft-lex --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish ccft-session
+        run: cargo publish --package ccft-session --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish ccft-sse
+        run: cargo publish --package ccft-sse --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish ccft-brainrot
+        run: cargo publish --package ccft-brainrot --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish ccft
+        run: cargo publish --package ccft --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # Source-only GitHub release (no binary downloadables).
+      - name: Create source release
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           gh release create "$TAG" \
             --title "$TAG" \
             --generate-notes \
-            dist/macos/ccft-macos-universal \
-            dist/macos/ccft-macos-universal.tar.gz \
-            dist/linux/ccft-linux-x86_64 \
-            dist/linux/ccft-linux-x86_64.tar.gz
+            --repo "$GITHUB_REPOSITORY"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

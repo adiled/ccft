@@ -15,6 +15,7 @@ mod session;
 mod sse_tap;
 mod theme;
 mod trust;
+mod update;
 mod tui;
 
 use clap::{Parser, Subcommand};
@@ -57,6 +58,8 @@ enum Cmd {
     Stop,
     /// Restart.
     Restart,
+    /// Update ccft from crates.io and restart the service.
+    Update,
     /// Print env vars to route agent through ccft, or apply/revoke.
     Trust {
         #[arg(long)]
@@ -139,6 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Start => lifecycle::start(&Config::load()),
         Cmd::Stop => lifecycle::stop(&Config::load()),
         Cmd::Restart => lifecycle::restart(&Config::load()),
+        Cmd::Update => update::update(),
         Cmd::Trust {
             apply,
             revoke,
@@ -181,9 +185,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_flytrap(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
+    // Startup auto-update: if crates.io has a newer release, install + exit so
+    // the service manager relaunches the fresh binary. Never fatal.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    rt.block_on(update::maybe_auto_update(&cfg));
     rt.block_on(flytrap::run(cfg))
 }
 

@@ -339,6 +339,7 @@ dependencies = [
  "http-body-util",
  "hudsucker",
  "hyper",
+ "hyper-util",
  "once_cell",
  "ratatui",
  "rcgen",

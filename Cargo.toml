@@ -14,6 +14,10 @@ name = "ccft"
 version = "1.10.0"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/adiled/ccft"
+readme = "README.md"
+keywords = ["ccft", "agentic", "proxy", "ledger", "flytrap"]
+categories = ["development-tools::debugging", "network-programming"]
 description = "ccft - an agentic self improvement tool"
 
 [lib]
@@ -32,6 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 http-body-util = "0.1"
 bytes = "1"
 hyper = "1"
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "http1", "tokio"] }
 rcgen = { version = "0.14", features = ["x509-parser", "pem"] }
 time = { version = "0.3", features = ["local-offset", "macros", "parsing", "formatting"] }
 serde_json = "1"
@@ -45,11 +50,11 @@ ratatui = "0.30"
 crossterm = "0.29"
 
 # workspace crates
-ccft-ledger = { path = "crates/ccft-ledger" }
-ccft-session = { path = "crates/ccft-session" }
-ccft-lex = { path = "crates/ccft-lex" }
-ccft-brainrot = { path = "crates/ccft-brainrot" }
-ccft-sse = { path = "crates/ccft-sse" }
+ccft-ledger = { version = "0.1", path = "crates/ccft-ledger" }
+ccft-session = { version = "0.1", path = "crates/ccft-session" }
+ccft-lex = { version = "0.1", path = "crates/ccft-lex" }
+ccft-brainrot = { version = "0.1", path = "crates/ccft-brainrot" }
+ccft-sse = { version = "0.1", path = "crates/ccft-sse" }
 
 [profile.release]
 opt-level = 3

@@ -8,9 +8,18 @@
 | **Linux** | `systemd-user` unit | full (`ccft start/stop/restart/status/logs` via `systemctl --user` + `journalctl`) |
 | **Windows** | not implemented yet | manual (`ccft run` in a terminal, or wrap with NSSM/sc.exe) |
 
-For source build: `rustc` ≥ 1.95 (`brew install rust` on mac, distro package on linux).
+## Install
 
-## Quick install (from source)
+From crates.io (recommended — builds from source, so no unsigned-binary /
+Gatekeeper issues on macOS):
+
+```bash
+cargo install ccft    # requires cargo (brew install rust on mac)
+ccft install
+ccft trust --apply
+```
+
+From source (`rustc` ≥ 1.95 — `brew install rust` on mac, distro package on linux):
 
 ```bash
 make install         # build + ccft install
@@ -38,13 +47,26 @@ export NODE_EXTRA_CA_CERTS=$HOME/.cc-flytrap/ca.pem
 
 `ccft trust --revoke` reverses the env edits cleanly.
 
+## Update
+
+```bash
+ccft update    # cargo install ccft --force, re-apply trust, restart the service
+```
+
+`ccft run` also auto-updates at startup: if crates.io has a newer release it
+installs and restarts onto the fresh binary (launchd/systemd relaunch it).
+
 ## Uninstall
 
 ```bash
 ccft uninstall
 ```
 
-Bootout, removes the plist, removes the installed binary. **Keeps** the CA cert, config, and ledger so a re-install picks up where you left off. To purge:
+**Revokes trust first** (removes the proxy env + shell-RC sourcing so no shell
+is left pointing at a deleted flytrap — that's what previously looked like a
+machine-wide internet outage), then bootout, removes the plist, removes the
+installed binary. **Keeps** the CA cert, config, and ledger so a re-install
+picks up where you left off. To purge:
 
 ```bash
 rm -rf ~/.cc-flytrap ~/.config/ccft ~/.local/share/ccft

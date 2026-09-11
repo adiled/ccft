@@ -8,21 +8,17 @@ What makes ccft truly a self-improvement tool? It weighs bots against drivers, w
 
 ## Install ccft
 
-Prebuilt binary from the latest release:
+From crates.io (`cargo install` builds from source, so there are no
+unsigned-binary / Gatekeeper issues — macOS and Linux get the same path):
 
 ```bash
-# macOS (universal aarch64 + x86_64)
-curl -L https://github.com/adiled/ccft/releases/latest/download/ccft-macos-universal -o /usr/local/bin/ccft
-
-# Linux (x86_64)
-curl -L https://github.com/adiled/ccft/releases/latest/download/ccft-linux-x86_64 -o /usr/local/bin/ccft
-
-chmod +x /usr/local/bin/ccft
+# requires rustup / cargo (brew install rust on macOS)
+cargo install ccft
 ccft install
 ccft trust --apply
 ```
 
-Or build from source (`brew install rust`):
+Or build from source in this repo (`brew install rust`):
 
 ```bash
 make install
@@ -30,6 +26,15 @@ ccft trust --apply
 ```
 
 `ccft install` provisions the CA, default config, plist, and launchd unit.
+
+### Update
+
+```bash
+ccft update        # explicit: cargo install ccft --force, re-apply trust, restart service
+```
+
+The flytrap also auto-updates itself at startup (`ccft run`): if crates.io has
+a newer release, it installs and restarts onto the fresh binary.
 
 `ccft trust --apply` writes the proxy + CA env into `~/.cc-flytrap/ccft.env` and sources it from every shell RC it finds (`.zshenv`, `.zshrc`, `.bashrc`, …), so every shell-launched agent inherits the trust.
 
