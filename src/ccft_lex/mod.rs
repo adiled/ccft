@@ -1,7 +1,5 @@
 //! Pure text fingerprinting: lexical stats, bigrams, novelty, system-block
-//! stripping. Split out of the `ccft` binary's request handler so the text
-//! metrics are usable standalone — they're plain `&str -> numbers/strings`,
-//! with zero I/O.
+//! stripping. Plain `&str -> numbers/strings`, with zero I/O.
 
 use std::collections::{HashMap, HashSet};
 

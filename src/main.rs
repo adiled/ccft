@@ -1,6 +1,11 @@
 //! ccft. an agentic self improvement tool.
 
 mod brainrot;
+mod ccft_brainrot;
+mod ccft_ledger;
+mod ccft_lex;
+mod ccft_session;
+mod ccft_sse;
 mod config;
 mod flytrap;
 mod handler;

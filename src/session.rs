@@ -1,3 +1,3 @@
-//! ccft's session-id extraction, re-exported from the `ccft-session` crate.
+//! ccft's session-id extraction, re-exported from the `ccft_session` module.
 
-pub use ccft_session::extract;
+pub use crate::ccft_session::extract;

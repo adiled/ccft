@@ -1,8 +1,7 @@
-//! `ccft-ledger` — append/tail/range-read a growing JSONL ledger.
+//! Append/tail/range-read a growing JSONL ledger.
 //!
-//! Split out of the `ccft` binary so the read-side primitives are usable on
-//! their own. Everything here is generic: it works on *any* JSONL file whose
-//! lines carry a `ts` field, no ccft-specific paths or identity required.
+//! Generic: works on *any* JSONL file whose lines carry a `ts` field — no
+//! ccft-specific paths or identity required.
 //!
 //! ## What's here
 //! - [`Record`] — a parsed ledger line (tokens, latency, lexical fingerprint).

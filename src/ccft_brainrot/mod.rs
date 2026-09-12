@@ -1,9 +1,7 @@
 //! Agentic turn classification + baseline fingerprinting.
 //!
-//! Split out of the `ccft` binary's brainrot module. Pure math over
-//! [`ccft_ledger::Record`] — zero I/O, no ccft-specific paths. The crown
-//! jewel of the cratification: EM gap mixture, bot/driver scoring, baseline
-//! fingerprint, and the V·L·P·V model.
+//! Pure math over [`ccft_ledger::Record`] — zero I/O, no ccft-specific paths.
+//! EM gap mixture, bot/driver scoring, baseline fingerprint, and the V·L·P·V model.
 //!
 //! ## What's here
 //! - [`Aggregate`] + [`Aggregate::ingest_into`] — fold records into a live window.
@@ -13,7 +11,7 @@
 //! - [`driver_score`] / [`bot_score`] / [`score_breakdown`] / [`diagnosis`].
 //! - [`compute_signal`] / [`Signal`] — the "what is the agent doing now" heuristic.
 
-use ccft_ledger::Record;
+use crate::ccft_ledger::Record;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default, Debug)]

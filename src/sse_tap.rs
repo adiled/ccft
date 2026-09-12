@@ -1,12 +1,12 @@
-//! ccft-specific adapter over the generic `ccft-sse` tap.
+//! ccft-specific adapter over the generic `ccft_sse` module.
 //!
-//! The generic crate parses SSE/JSON into a [`TapReport`] with no knowledge
+//! The generic module parses SSE/JSON into a [`TapReport`] with no knowledge
 //! of ccft's ledger; this module maps the bin's [`FlowMeta`] in and routes the
 //! finished report to the write-side [`ledger::append`].
 
 use crate::handler::FlowMeta;
 use crate::ledger;
-use ccft_sse::{SseTap, TapMeta, TapReport};
+use crate::ccft_sse::{SseTap, TapMeta, TapReport};
 use hyper::body::Body;
 
 /// Build an `SseTap` wired to ccft's ledger write. `label` is the client IP /

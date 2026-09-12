@@ -1,10 +1,10 @@
 name: Release
 
-# Publish ccft to crates.io in dependency order. No GitHub binary downloadables:
-# `cargo install ccft` builds from source, so there are no unsigned-binary /
-# Gatekeeper "unverified" issues on macOS (the previous curl-a-binary path is
-# gone). Tag pushes also open a source-only GitHub release (notes + tarball)
-# for changelog visibility, but it carries no executable artifacts.
+# Publish ccft to crates.io. No GitHub binary downloadables: `cargo install
+# ccft` builds from source, so there are no unsigned-binary / Gatekeeper
+# "unverified" issues on macOS (the previous curl-a-binary path is gone). Tag
+# pushes also open a source-only GitHub release (notes + tarball) for
+# changelog visibility, but it carries no executable artifacts.
 
 on:
   push:
@@ -21,29 +21,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Publish in dependency order — each crate's `path` deps become `version`
-      # deps in the package, and cargo resolves them against crates.io, so the
-      # dependency crates must land first.
-      - name: Publish ccft-ledger
-        run: cargo publish --package ccft-ledger --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Publish ccft-lex
-        run: cargo publish --package ccft-lex --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Publish ccft-session
-        run: cargo publish --package ccft-session --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Publish ccft-sse
-        run: cargo publish --package ccft-sse --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Publish ccft-brainrot
-        run: cargo publish --package ccft-brainrot --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Publish ccft
         run: cargo publish --package ccft --allow-dirty
         env:

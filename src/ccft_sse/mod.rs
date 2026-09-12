@@ -1,7 +1,7 @@
-//! `ccft-sse` — a generic hyper [`Body`] tap that turns an SSE (or plain-JSON)
-//! response stream into a usage/latency report.
+//! A generic hyper [`Body`] tap that turns an SSE (or plain-JSON) response
+//! stream into a usage/latency report.
 //!
-//! Split out of the `ccft` binary. This crate is provider-agnostic: it parses
+//! Provider-agnostic: it parses
 //! OpenAI and Anthropic stream shapes into a [`TapMeta`]-carried report and
 //! hands the finished report to a caller-supplied callback, so the write-side
 //! ledger (which is ccft-specific) stays in the binary.

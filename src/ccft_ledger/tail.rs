@@ -1,9 +1,9 @@
 //! Incremental tail reader for a growing JSONL ledger + time-anchored binary
-//! search. The crown piece of `ccft-ledger`: ditto-exact copies of a file
+//! search. Ditto-exact copies of a file
 //! being appended to concurrently.
 
 use super::Record;
-use crate::MIN_TS;
+use super::MIN_TS;
 use std::fs;
 use std::io::{Read, Seek};
 

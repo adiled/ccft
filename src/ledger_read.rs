@@ -1,18 +1,17 @@
-//! ccft's ledger read-surface, re-exported from the `ccft-ledger` crate.
+//! ccft's ledger read-surface, re-exported from the `ccft_ledger` module.
 //!
 //! The generic primitives (Record, TailReader, parse_range/percentile,
-//! coverage, top-N/window readers) live in `crates/ccft-ledger` and are
-//! published as a standalone crate. What stays here is the ccft-specific
-//! glue: computing the live+archive ledger paths from `config::paths`.
+//! coverage, top-N/window readers) live in `src/ccft_ledger` as part of this
+//! single crate. What stays here is the ccft-specific glue: computing the live+archive ledger paths from `config::paths`.
 //! Everything else is a thin re-export so the rest of the binary is
 //! unchanged.
 
-pub use ccft_ledger::{
+pub use crate::ccft_ledger::{
     compute_coverage, now_secs, parse_range, percentile, read_records_since_from, Coverage, Range,
     Record, StateEvent, TailReader,
 };
 
-use ccft_ledger::{
+use crate::ccft_ledger::{
     iter_records as iter_records_crate, load_state_events as load_state_crate,
     load_top_records as load_top_crate, newest_record_ts as newest_crate,
 };
