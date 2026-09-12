@@ -19,7 +19,7 @@ separate sub-crates to publish in dependency order.
 cargo login        # crates.io API token → ~/.cargo/credentials
 ```
 
-In GitHub, add a **`CARGO_REGISTRY_TOKEN`** secret (the crates.io API token).
+In GitHub, add a **`CRATES_IO_TOKEN`** secret (the crates.io API token).
 The tag-push workflow (`.github/workflows/release.yml`) uses it.
 
 ## Manual publish (if you want to do it by hand)
