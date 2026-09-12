@@ -15,24 +15,8 @@ separate sub-crates to publish in dependency order.
 
 ## One-time setup
 
-```bash
-cargo login        # crates.io API token → ~/.cargo/credentials
-```
-
 In GitHub, add a **`CRATES_IO_TOKEN`** secret (the crates.io API token).
 The tag-push workflow (`.github/workflows/release.yml`) uses it.
-
-## Manual publish (if you want to do it by hand)
-
-```bash
-# verify the package builds as it would on crates.io
-cargo package -p ccft
-
-# publish
-cargo publish -p ccft
-```
-
-`cargo publish --allow-dirty` if the working tree is dirty.
 
 ## Version bumps
 
