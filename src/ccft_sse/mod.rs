@@ -124,8 +124,139 @@ impl<B> SseTap<B> {
         // drains pretty-printed JSON newlines down to an empty buffer. Parse
         // the whole body directly instead.
         self.line_buf = String::from_utf8_lossy(bytes).into_owned();
-        self.parse_complete_body();
+        // A single whole JSON document (`stream:false`, often pretty-printed)
+        // is not ndjson — shape-dispatch it once, not line by line.
+        let whole = std::mem::take(&mut self.line_buf).trim().to_string();
+        if serde_json::from_str::<Value>(whole.as_str()).is_ok() {
+            self.parse_event(whole.as_str());
+            self.report();
+            return;
+        }
+        self.line_buf = whole;
+        // ndjson (`{…}\n{…}`) or SSE-in-a-body: drain line by line, exactly
+        // the way `ingest` would.
+        while let Some(idx) = self.line_buf.find('\n') {
+            let rest = self.line_buf[..idx]
+                .strip_prefix("data: ")
+                .unwrap_or(self.line_buf[..idx].trim())
+                .trim()
+                .to_string();
+            if !rest.is_empty() {
+                self.parse_event(&rest);
+            }
+            self.line_buf.drain(..=idx);
+        }
+        let tail = self.line_buf.trim().to_string();
+        if !tail.is_empty() {
+            let rest = tail.strip_prefix("data: ").unwrap_or(&tail).trim().to_string();
+            if !rest.is_empty() {
+                self.parse_event(&rest);
+            }
+        }
+        std::mem::take(&mut self.line_buf);
         self.report();
+    }
+
+
+    /// Dispatch a single raw JSON frame by shape. Handles OpenAI SSE,
+    /// Anthropic SSE, and Ollama's ndjson/JSON bodies — all OpenAI-family
+    /// servers land under one provider tag, so shape decides.
+    fn parse_event(&mut self, json_str: &str) {
+        if json_str.trim() == "[DONE]" {
+            // OpenAI stream terminator — expected, not an error.
+            return;
+        }
+        let d: Value = match serde_json::from_str(json_str) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(
+                    "[ccft] unparseable data line from {}: {}",
+                    self.meta.provider, e
+                );
+                return;
+            }
+        };
+        if d.as_array().is_some() {
+            // Anthropic event frames nest inside a `message.content` array;
+            // top-level arrays aren't expected for a chat event, so warn.
+            warn!("[ccft] got array event; expected a single JSON doc — {}", json_str);
+            return;
+        }
+        let m = d.get("message").cloned();
+        if let Some(m) = m {
+            // A message sub-object: if it has an `id` this is an Anthropic
+            // event (usage rides under message.usage); otherwise it's an
+            // Ollama `/api/chat` frame (content rides under message.content).
+            if m.get("id").is_some() {
+                self.parse_anthropic_event(&d);
+            } else {
+                self.parse_ollama_event(&d);
+            }
+        } else if self.meta.provider == PROVIDER_OPENAI {
+            self.parse_openai_event(&d);
+        } else {
+            self.parse_anthropic_event(&d);
+        }
+    }
+
+    /// Anthropic streaming frames (`message_start` / `message_delta`).
+    fn parse_anthropic_event(&mut self, d: &Value) {
+        if let Some(msg) = d.get("message") {
+            if let Some(id) = msg.get("id").and_then(Value::as_str) {
+                self.ref_id = Some(id.to_string());
+            }
+            if let Some(model) = msg.get("model").and_then(Value::as_str) {
+                self.usage.model = Some(model.to_string());
+            }
+            // Anthropic thinking blocks ride inside the content array.
+            if let Some(blocks) = msg.get("content").and_then(Value::as_array) {
+                for b in blocks {
+                    if let Some(t) = b.get("thinking").and_then(Value::as_str) {
+                        self.meta.thinking_chars += t.chars().count() as u64;
+                    }
+                }
+            }
+            if let Some(u) = msg.get("usage") {
+                self.usage.input_tokens += u_u64(u, "input_tokens");
+                self.usage.output_tokens += u_u64(u, "output_tokens");
+                self.usage.cache_read_input_tokens += u_u64(u, "cache_read_input_tokens");
+                self.usage.cache_creation_input_tokens +=
+                    u_u64(u, "cache_creation_input_tokens");
+            }
+            return;
+        }
+        if let Some(u) = d.get("usage").or_else(|| d.get("delta").and_then(|x| x.get("usage"))) {
+            self.usage.input_tokens += u_u64(u, "input_tokens");
+            self.usage.output_tokens += u_u64(u, "output_tokens");
+            self.usage.cache_read_input_tokens += u_u64(u, "cache_read_input_tokens");
+            self.usage.cache_creation_input_tokens += u_u64(u, "cache_creation_input_tokens");
+        }
+    }
+
+    /// Ollama `/api/chat` frame — each line carries `model`, `message`,
+    /// optionally `done` and per-frame usage counters (`prompt_eval_count`,
+    /// `eval_count`).  Counters only appear on the final frame, so we
+    /// overwrite each field (rather than accumulate) from that frame.
+    fn parse_ollama_event(&mut self, d: &Value) {
+        if let Some(model) = d.get("model").and_then(Value::as_str) {
+            self.usage.model = Some(model.to_string());
+        }
+        if let Some(msg) = d.get("message") {
+            if let Some(content) = msg.get("content").and_then(Value::as_str) {
+                self.delta_chars += content.chars().count() as u64;
+            }
+            for key in ["reasoning", "reasoning_content"] {
+                if let Some(r) = msg.get(key).and_then(Value::as_str) {
+                    self.meta.thinking_chars += r.chars().count() as u64;
+                }
+            }
+        }
+        if let Some(pe) = d.get("prompt_eval_count").and_then(Value::as_u64) {
+            self.usage.input_tokens = pe;
+        }
+        if let Some(e) = d.get("eval_count").and_then(Value::as_u64) {
+            self.usage.output_tokens = e;
+        }
     }
 
     fn ingest(&mut self, chunk: &[u8]) {
@@ -136,7 +267,8 @@ impl<B> SseTap<B> {
 
         while let Some(idx) = self.line_buf.find('\n') {
             let line = self.line_buf[..idx].trim_end_matches('\r').to_string();
-            if let Some(rest) = line.strip_prefix("data: ") {
+            let rest = line.strip_prefix("data: ").unwrap_or(line.trim()).trim();
+            if !rest.is_empty() {
                 self.parse_event(rest);
             }
             // Drain the consumed line (including its `\n`) so the next
@@ -149,112 +281,6 @@ impl<B> SseTap<B> {
     /// Parse a whole (non-streaming) JSON response body that arrived without
     /// `data: ` SSE framing — e.g. `stream:false` chat completions. Called on
     /// EOF for any leftover buffered body that wasn't SSE lines.
-    fn parse_complete_body(&mut self) {
-        debug!(
-            "[ccft] parse_complete_body: line_buf={} bytes",
-            self.line_buf.len()
-        );
-        let body = std::mem::take(&mut self.line_buf);
-        let body = body.trim();
-        if body.is_empty() {
-            return;
-        }
-        let d: Value = match serde_json::from_str(body) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!(
-                    "[ccft] non-stream body not parseable ({}), ignoring: {}",
-                    self.meta.provider, e
-                );
-                return;
-            }
-        };
-
-        debug!("[ccft] parse_complete_body: {} bytes parsed", body.len());
-        if self.meta.provider == PROVIDER_OPENAI {
-            self.parse_openai_event(&d);
-        } else if let Some(msg) = d.get("message") {
-            if let Some(id) = msg.get("id").and_then(Value::as_str) {
-                self.ref_id = Some(id.to_string());
-            }
-            if let Some(model) = msg.get("model").and_then(Value::as_str) {
-                self.usage.model = Some(model.to_string());
-            }
-            if let Some(u) = msg.get("usage") {
-                self.usage.input_tokens += u_u64(u, "input_tokens");
-                self.usage.output_tokens += u_u64(u, "output_tokens");
-                self.usage.cache_read_input_tokens += u_u64(u, "cache_read_input_tokens");
-                self.usage.cache_creation_input_tokens += u_u64(u, "cache_creation_input_tokens");
-            }
-        }
-    }
-
-    fn parse_event(&mut self, json_str: &str) {
-        let d: Value = match serde_json::from_str(json_str) {
-            Ok(d) => d,
-            Err(e) => {
-                // `data: [DONE]` is the OpenAI stream terminator — expected,
-                // not a content mismatch.
-                if json_str.trim() == "[DONE]" {
-                    return;
-                }
-                warn!(
-                    "[ccft] unparseable {} data line ({}), ignoring: {}",
-                    self.meta.provider, e, json_str
-                );
-                return;
-            }
-        };
-
-        if self.meta.provider == PROVIDER_OPENAI {
-            debug!("[ccft][openai][raw-resp] data: {}", json_str);
-            self.parse_openai_event(&d);
-            return;
-        }
-
-        match d.get("type").and_then(Value::as_str) {
-            Some("message_start") => {
-                if let Some(msg) = d.get("message") {
-                    if let Some(id) = msg.get("id").and_then(Value::as_str) {
-                        self.ref_id = Some(id.to_string());
-                    }
-                    if let Some(model) = msg.get("model").and_then(Value::as_str) {
-                        self.usage.model = Some(model.to_string());
-                    }
-                    // Anthropic thinking blocks stream inside the message's
-                    // content array (type: "thinking").
-                    if let Some(blocks) = msg.get("content").and_then(Value::as_array) {
-                        for b in blocks {
-                            if let Some(t) = b.get("thinking").and_then(Value::as_str) {
-                                self.meta.thinking_chars += t.chars().count() as u64;
-                            }
-                        }
-                    }
-                    if let Some(u) = msg.get("usage") {
-                        self.usage.input_tokens += u_u64(u, "input_tokens");
-                        self.usage.output_tokens += u_u64(u, "output_tokens");
-                        self.usage.cache_read_input_tokens += u_u64(u, "cache_read_input_tokens");
-                        self.usage.cache_creation_input_tokens +=
-                            u_u64(u, "cache_creation_input_tokens");
-                    }
-                }
-            }
-            Some("message_delta") => {
-                if let Some(u) = d
-                    .get("usage")
-                    .or_else(|| d.get("delta").and_then(|x| x.get("usage")))
-                {
-                    self.usage.input_tokens += u_u64(u, "input_tokens");
-                    self.usage.output_tokens += u_u64(u, "output_tokens");
-                    self.usage.cache_read_input_tokens += u_u64(u, "cache_read_input_tokens");
-                    self.usage.cache_creation_input_tokens +=
-                        u_u64(u, "cache_creation_input_tokens");
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn parse_openai_event(&mut self, d: &Value) {
         if let Some(id) = d.get("id").and_then(Value::as_str) {
             self.ref_id = Some(id.to_string());
@@ -381,7 +407,11 @@ where
             }
             Poll::Ready(None) => {
                 debug!("[ccft][tap] EOF reached, parsing leftover body");
-                me.parse_complete_body();
+                let rest = std::mem::take(&mut me.line_buf).trim().to_string();
+                if !rest.is_empty() {
+                    let body = rest.strip_prefix("data: ").unwrap_or(&rest).trim();
+                    me.parse_event(body);
+                }
                 me.report();
                 Poll::Ready(None)
             }
@@ -486,5 +516,29 @@ mod tests {
         let rep = tap_bytes_into(PROVIDER_OPENAI, body);
         assert_eq!(rep.input_tokens, 0);
         assert_eq!(rep.output_tokens, 2); // 11 / 4
+    }
+
+    #[test]
+    fn ollama_stream_frames_ndjson() {
+        let body = concat!(
+            r#"{"model":"phi4-mini:3.8b","message":{"role":"assistant","content":"He"},"done":false,"prompt_eval_count":42,"eval_count":1}"#,
+            "\n",
+            r#"{"model":"phi4-mini:3.8b","message":{"role":"assistant","content":"llo!"},"done":false,"prompt_eval_count":42,"eval_count":2}"#,
+            "\n",
+            r#"{"model":"phi4-mini:3.8b","message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":42,"eval_count":3,"total_duration":100000000}"#
+        );
+        let rep = tap_bytes_into(PROVIDER_OPENAI, body);
+        assert_eq!(rep.input_tokens, 42);
+        assert_eq!(rep.output_tokens, 3);
+        assert_eq!(rep.model.as_deref(), Some("phi4-mini:3.8b"));
+    }
+
+    #[test]
+    fn ollama_nonstream_single_frame() {
+        let body = r#"{"model":"phi4-mini:3.8b","message":{"role":"assistant","content":"hi there, friend"},"done":true,"prompt_eval_count":7,"eval_count":19}"#;
+        let rep = tap_bytes_into(PROVIDER_OPENAI, body);
+        assert_eq!(rep.input_tokens, 7);
+        assert_eq!(rep.output_tokens, 19);
+        assert_eq!(rep.model.as_deref(), Some("phi4-mini:3.8b"));
     }
 }
