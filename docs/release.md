@@ -15,7 +15,7 @@ separate sub-crates to publish in dependency order.
 
 ## One-time setup
 
-In GitHub, add a **`CRATES_IO_TOKEN`** secret (the crates.io API token).
+In GitHub, add a **`CRATES_IO_TOKEN`** secret (the crates.io API token). The workflow exports it as `CARGO_REGISTRY_TOKEN` (the env var cargo reads).
 The tag-push workflow (`.github/workflows/release.yml`) uses it.
 
 ## Version bumps

@@ -24,7 +24,7 @@ jobs:
       - name: Publish ccft
         run: cargo publish --package ccft --allow-dirty
         env:
-          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 
       # Source-only GitHub release (no binary downloadables).
       - name: Create source release
