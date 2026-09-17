@@ -170,7 +170,9 @@ pub fn place_binary(
 /// service unit. Returns true when it changed something.
 ///
 /// Cheap in the steady state: skips entirely when already running from the
-/// install location, and a byte-compare decides whether a re-place is needed.
+/// install location, and a version compare decides whether a re-place is
+/// needed (byte-compare would misfire: the install copy is adhoc re-signed
+/// on every place, so it never matches the source bytes again).
 pub fn ensure_installed() -> Result<bool, Box<dyn std::error::Error>> {
     if paths::is_isolated() {
         return Ok(false);
@@ -181,13 +183,8 @@ pub fn ensure_installed() -> Result<bool, Box<dyn std::error::Error>> {
         return Ok(false);
     }
 
-    let stale = !dst.exists()
-        || fs::read(&src)
-            .map(|s| s != fs::read(&dst).unwrap_or_default())
-            .unwrap_or(true);
-
     let mut changed = false;
-    if stale {
+    if needs_placement(&dst) {
         let _ = service::bootout();
         place_binary(&src, &dst)?;
         println!("✓ replaced install binary {}", dst.display());
@@ -205,6 +202,23 @@ pub fn ensure_installed() -> Result<bool, Box<dyn std::error::Error>> {
         changed = true;
     }
     Ok(changed)
+}
+
+/// Version compare against the installed copy. `dst --version` exits during
+/// clap parsing (before any side effects), so probing it is side-effect free;
+/// a failure to even run means the path is broken and needs re-placing.
+fn needs_placement(dst: &std::path::Path) -> bool {
+    if !dst.exists() {
+        return true;
+    }
+    let mine = env!("CARGO_PKG_VERSION");
+    std::process::Command::new(dst)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| !s.contains(mine))
+        .unwrap_or(true)
 }
 
 /// Read the existing config (if any), update / insert `service_label`, and

@@ -122,9 +122,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let no_subcommand = cli.command.is_none();
         let going_to_run = matches!(cli.command, Some(Cmd::Run))
             || (no_subcommand && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
-        if install::ensure_installed()? && going_to_run {
+        let changed = install::ensure_installed()?;
+        if changed && going_to_run {
             println!("✓ service re-provisioned with the current binary — exiting for the service to take over");
             return Ok(());
+        }
+        // A re-provision just bounced the service; let it re-bind before
+        // `status` reports what it sees mid-boot.
+        if changed && matches!(cli.command, Some(Cmd::Status)) {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
         }
     }
 
