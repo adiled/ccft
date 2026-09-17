@@ -73,21 +73,20 @@ impl CcftHandler {
          }
      }
  }
-
-
 fn classify_post(req: &Request<Body>) -> Option<&'static str> {
     if req.method() != hyper::Method::POST {
         return None;
-     }
+    }
     let path = req.uri().path();
     if path.ends_with("/v1/messages") || path.ends_with("/api/messages") {
         return Some(PROVIDER_ANTHROPIC);
-     }
-    if path.ends_with("/v1/chat/completions") || path.ends_with("/api/chat") {
+    }
+    if path.ends_with("/v1/chat/completions") || path.ends_with("/api/chat") || path.ends_with("/v1/responses") {
         return Some(PROVIDER_OPENAI);
-     }
+    }
     None
 }
+
 
 fn flow_key(client: &str, uri: &hyper::Uri) -> FlowKey {
     let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
