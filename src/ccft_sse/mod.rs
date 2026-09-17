@@ -161,7 +161,7 @@ impl<B> SseTap<B> {
     /// Dispatch a single raw JSON frame by shape. Handles OpenAI SSE,
     /// Anthropic SSE, and Ollama's ndjson/JSON bodies — all OpenAI-family
     /// servers land under one provider tag, so shape decides.
-    fn parse_event(&mut self, json_str: &str) {
+        fn parse_event(&mut self, json_str: &str) {
         if json_str.trim() == "[DONE]" {
             // OpenAI stream terminator — expected, not an error.
             return;
@@ -185,13 +185,17 @@ impl<B> SseTap<B> {
         let m = d.get("message").cloned();
         if let Some(m) = m {
             // A message sub-object: if it has an `id` this is an Anthropic
-            // event (usage rides under message.usage); otherwise it's an
+            // event (usage rides under message.usage); otherwise it is an
             // Ollama `/api/chat` frame (content rides under message.content).
             if m.get("id").is_some() {
                 self.parse_anthropic_event(&d);
             } else {
                 self.parse_ollama_event(&d);
             }
+        } else if d.get("response").is_some() || d.get("delta").is_some() || d.get("type").is_some() {
+            // OpenAI Responses protocol (`/v1/responses`): streaming events
+            // carry `type`/`delta`, final event carries `response.output`.
+            self.parse_responses_event(&d);
         } else if self.meta.provider == PROVIDER_OPENAI {
             self.parse_openai_event(&d);
         } else {
@@ -256,6 +260,47 @@ impl<B> SseTap<B> {
         }
         if let Some(e) = d.get("eval_count").and_then(Value::as_u64) {
             self.usage.output_tokens = e;
+        }
+    }
+
+
+    /// Responses protocol (OpenAI `/v1/responses`): two shapes.
+    /// Streaming: `{"type":"response.output_text.delta","delta":"...","response":{"output_text_deltas":["..."],...}}`
+    /// Non-streaming: `{"response":{"output":[{...}],"usage":{...},...},"usage":{...}}`
+    fn parse_responses_event(&mut self, d: &Value) {
+        // model may ride top-level or under response
+        if let Some(model) = d.get("model").and_then(Value::as_str) {
+            self.usage.model = Some(model.to_string());
+        }
+        // Streaming deltas
+        if let Some(delta) = d.get("delta").and_then(Value::as_str) {
+            self.delta_chars += delta.chars().count() as u64;
+        }
+        // Non-streaming: response.output is an array of output items
+        if let Some(resp) = d.get("response") {
+            if let Some(model) = resp.get("model").and_then(Value::as_str) {
+                self.usage.model = Some(model.to_string());
+            }
+            if let Some(out) = resp.get("output").and_then(Value::as_array) {
+                for item in out {
+                    if let Some(t) = item.get("text").and_then(Value::as_str) {
+                        self.delta_chars += t.chars().count() as u64;
+                    }
+                }
+            }
+            if let Some(u) = resp.get("usage") {
+                self.usage.input_tokens = u_u64(u, "input_tokens");
+                self.usage.output_tokens = u_u64(u, "output_tokens");
+                if let Some(det) = u.get("input_tokens_details") {
+                    self.usage.cache_read_input_tokens += u_u64(det, "cached_tokens");
+                    self.usage.cache_creation_input_tokens += u_u64(det, "cached_tokens");
+                }
+            }
+        }
+        // Top-level usage fallback (streaming responses emit usage in final event)
+        if let Some(u) = d.get("usage") {
+            self.usage.input_tokens = u_u64(u, "input_tokens");
+            self.usage.output_tokens = u_u64(u, "output_tokens");
         }
     }
 
@@ -534,6 +579,30 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn responses_stream_deltas_and_usage() {
+        let body = concat!(
+            r#"data: {"type":"response.output_text.delta","delta":"He"}"#,
+            "\n",
+            r#"data: {"type":"response.output_text.delta","delta":"llo world"}"#,
+            "\n",
+            r#"data: {"type":"response.output_text.delta","delta":"","response":{"output_text_deltas":["Hello world"],"usage":{"input_tokens":9,"output_tokens":18}}}"#
+        );
+        let rep = tap_bytes_into(PROVIDER_OPENAI, body);
+        assert_eq!(rep.input_tokens, 9);
+        assert_eq!(rep.output_tokens, 18);
+    }
+
+    #[test]
+    fn responses_nonstream_response_output() {
+        let body = r#"{"response":{"model":"gpt-5","output":[{"type":"message","text":"hello from responses"}],"usage":{"input_tokens":11,"output_tokens":22,"input_tokens_details":{"cached_tokens":3}}}}"#;
+        let rep = tap_bytes_into(PROVIDER_OPENAI, body);
+        assert_eq!(rep.input_tokens, 11);
+        assert_eq!(rep.output_tokens, 22);
+        assert_eq!(rep.cache_read, 3);
+        assert_eq!(rep.model.as_deref(), Some("gpt-5"));
+    }
+
     fn ollama_nonstream_single_frame() {
         let body = r#"{"model":"phi4-mini:3.8b","message":{"role":"assistant","content":"hi there, friend"},"done":true,"prompt_eval_count":7,"eval_count":19}"#;
         let rep = tap_bytes_into(PROVIDER_OPENAI, body);
