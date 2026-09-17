@@ -1,28 +1,27 @@
 //! Update: explicit `ccft update` and startup auto-update.
+//! Distribution is via crates.io (`cargo install ccft`); the fresh binary in
+//! `~/.cargo/bin` then runs `ccft install` to re-place the service copy, re-apply
+//! trust, and restart via launchd/systemd.
 //!
-//! Distribution is via crates.io (`cargo install ccft`), so the update path
-//! is: fetch the newest crate, build it into `~/.cargo/bin`, copy the fresh
-//! binary into the install location (`~/.local/bin`), re-sign (macOS), re-apply
-//! trust, and restart the service. Auto-update does the same at `ccft run`
-//! startup and then exits so launchd / systemd relaunch the new binary.
+//! The service's own auto-update never bootouts in-place from inside the job:
+//! `install` boots out the launchd job, which SIGTERMs the whole job process
+//! group — an updater running inside the job dies mid-copy, leaving the
+//! install binary deleted and every relaunch SIGKILLed (taskgated invalid
+//! signature on the tampered path). So the service spawns the installer as a
+//! detached session leader and exits; a lock file plus a stale-binary guard
+//! keep relaunches from re-entering the update race.
 
 use crate::config::{paths, Config};
 use std::process::Command;
 
-/// The crate name we install/update from on crates.io.
 const CRATE: &str = "ccft";
-
-/// The crates.io API URL for the latest version of `ccft`.
 const CRATES_IO_URL: &str = "https://crates.io/api/v1/crates/ccft";
+const UPDATE_LOCK: &str = "updating.lock";
 
-/// Read the version of the installed binary (the running executable).
 fn current_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Fetch the latest published version from crates.io. Returns None on any
-/// network/parse error (auto-update must never take the machine down because
-/// the registry was unreachable).
 async fn latest_version() -> Option<String> {
     use http_body_util::BodyExt;
     use hyper_util::client::legacy::Client;
@@ -41,7 +40,6 @@ async fn latest_version() -> Option<String> {
     Some(vers)
 }
 
-/// Compare versions `a` and `b` (semver-ish). Returns true if `a` > `b`.
 fn newer(a: &str, b: &str) -> bool {
     fn parts(s: &str) -> Vec<u64> {
         s.trim()
@@ -58,51 +56,80 @@ fn newer(a: &str, b: &str) -> bool {
         .unwrap_or_else(|| pa.len() > pb.len())
 }
 
-/// Copy the running/installed binary into the install location and re-sign.
-/// Reuses the same dance as `ccft install`: bootout first, replace, chmod 755,
-/// adhoc re-sign on macOS (overwriting a code-signed binary in place leaves the
-/// kernel's path-cache flagging that path as tampered → SIGKILL).
-fn place_binary() -> Result<(), Box<dyn std::error::Error>> {
-    let src = std::env::current_exe()?;
-    let dst = paths::install_bin();
-    std::fs::create_dir_all(paths::install_bin_dir())?;
-
-    let _ = crate::service::bootout();
-    if dst.exists() {
-        std::fs::remove_file(&dst)?;
+/// True when this process is the launchd/systemd-managed service instance:
+/// running from the install path with launchd (pid 1) as parent.
+fn is_service_instance() -> bool {
+    if paths::is_isolated() {
+        return false;
     }
-    std::fs::copy(&src, &dst)?;
-
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    if exe != paths::install_bin() {
+        return false;
+    }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&dst)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&dst, perms)?;
+        use std::os::unix::process::parent_id;
+        return parent_id() == 1;
     }
-
-    #[cfg(target_os = "macos")]
+    #[cfg(not(unix))]
     {
-        let _ = Command::new("codesign")
-            .args(["--force", "--sign", "-", dst.to_string_lossy().as_ref()])
-            .status();
+        false
     }
-    Ok(())
 }
 
-/// Re-apply trust (env + shell RC sourcing + ~/.claude.json) and restart the
-/// service so the new binary is the one launchd/systemd runs.
-fn finish_update() -> Result<(), Box<dyn std::error::Error>> {
-    crate::trust::apply_with(false)?;
-    if crate::service::supported() {
-        crate::service::register()?;
-        println!("✓ {} service restarted on the new binary", crate::service::manager_name());
+fn take_update_lock() -> bool {
+    let dir = paths::share_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return false;
     }
-    Ok(())
+    let lock = dir.join(UPDATE_LOCK);
+    // A crashed updater can leave a stale lock; age it out after 30 min.
+    if let Ok(meta) = std::fs::metadata(&lock) {
+        if let Ok(modified) = meta.modified() {
+            if modified.elapsed().map(|e| e.as_secs() > 1800).unwrap_or(false) {
+                let _ = std::fs::remove_file(&lock);
+            }
+        }
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(lock)
+        .is_ok()
 }
 
-/// Explicit `ccft update`: pull + build the newest crate, install, re-apply
-/// trust, restart.
+fn release_update_lock() {
+    let _ = std::fs::remove_file(paths::share_dir().join(UPDATE_LOCK));
+}
+
+/// Run `ccft install` from the freshly cargo-installed binary. Detached from
+/// our process group when we're the service instance, so the installer's
+/// bootout can't kill it; in-process otherwise (`ccft update` on a terminal).
+fn run_installer(new_bin: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    if is_service_instance() {
+        let mut cmd = Command::new(new_bin);
+        cmd.arg("install");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+        }
+        let _spawned = cmd.spawn()?;
+        Ok(())
+    } else {
+        let status = Command::new(new_bin).arg("install").status()?;
+        if !status.success() {
+            return Err(format!("fresh binary's install step failed: {}", status).into());
+        }
+        Ok(())
+    }
+}
+
 pub fn update() -> Result<(), Box<dyn std::error::Error>> {
     println!("Updating {} from crates.io…", CRATE);
     let status = Command::new("cargo")
@@ -112,56 +139,76 @@ pub fn update() -> Result<(), Box<dyn std::error::Error>> {
         return Err("cargo install failed — see output above".into());
     }
 
-    // cargo install puts the fresh binary in ~/.cargo/bin/ccft; re-run it so
-    // the install-location copy + trust + service restart happen from the new
-    // executable.
     let new_bin = paths::home().join(".cargo").join("bin").join("ccft");
     if new_bin.exists() {
-        let status = Command::new(&new_bin).args(["install"]).status()?;
-        if !status.success() {
-            return Err("fresh binary's install step failed".into());
-        }
+        run_installer(&new_bin)?;
         return Ok(());
     }
 
-    // Fallback: we may already BE the new binary (cargo install replaced us in
-    // ~/.cargo/bin and re-invoked). Just place + trust + restart.
-    place_binary()?;
-    finish_update()?;
+    let src = std::env::current_exe()?;
+    let dst = paths::install_bin();
+    crate::install::place_binary(&src, &dst)?;
+    crate::trust::apply_with(false)?;
+    if crate::service::supported() {
+        crate::service::register()?;
+        println!("✓ {} service restarted on the new binary", crate::service::manager_name());
+    }
     println!("✓ ccft updated to {}", current_version());
     Ok(())
 }
 
-/// Startup auto-update, called from `ccft run`. If the registry has a newer
-/// version, install it and exit so the service manager relaunches the new
-/// binary. Never fatal — network hiccups just skip.
 pub async fn maybe_auto_update(cfg: &Config) {
     if paths::is_isolated() {
         return;
     }
-    // Only auto-update the production flytrap; dev mode is a moving target.
     if cfg.service_label != crate::config::DEFAULT_SERVICE_LABEL {
         return;
     }
+
+    // Stale relaunch: an update already replaced the install binary with a
+    // newer file than the one we're executing from (we were relaunched off a
+    // bootout). Don't re-enter the update race — die and let the fresh
+    // service take over.
+    if let Ok(exe) = std::env::current_exe() {
+        let dst = paths::install_bin();
+        if dst.exists() && dst != exe {
+            if let (Ok(a), Ok(b)) = (std::fs::metadata(&exe), std::fs::metadata(&dst)) {
+                if let (Ok(at), Ok(bt)) = (a.modified(), b.modified()) {
+                    if bt > at {
+                        tracing::info!("[ccft] stale copy — install binary is newer, exiting");
+                        std::process::exit(0);
+                    }
+                }
+            }
+        }
+    }
+
+    if !take_update_lock() {
+        tracing::info!("[ccft] update already in progress, skipping");
+        return;
+    }
+
     let cur = current_version();
     let latest = match latest_version().await {
         Some(v) => v,
         None => {
+            release_update_lock();
             tracing::info!("[ccft] update check skipped (registry unreachable)");
             return;
         }
     };
     if !newer(&latest, &cur) {
+        release_update_lock();
         tracing::info!("[ccft] up to date ({})", cur);
         return;
     }
 
     tracing::info!("[ccft] newer version {} available — updating", latest);
-    // We're the running proxy; hand off to the update path and exit so
-    // launchd/systemd restart us with the fresh binary.
     if update().is_ok() {
+        // Lock stays held: the detached installer clears it on completion.
         std::process::exit(0);
     }
+    release_update_lock();
 }
 
 #[cfg(test)]

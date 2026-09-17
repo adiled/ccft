@@ -36,7 +36,7 @@ ccft update        # explicit: cargo install ccft --force, re-apply trust, resta
 The flytrap also auto-updates itself at startup (`ccft run`): if crates.io has
 a newer release, it installs and restarts onto the fresh binary.
 
-`ccft trust --apply` writes the proxy + CA env into `~/.cc-flytrap/ccft.env` and sources it from every shell RC it finds (`.zshenv`, `.zshrc`, `.bashrc`, …), so every shell-launched agent inherits the trust.
+`ccft trust --apply` writes the proxy + CA env into `~/.ccft/ccft.env` and sources it from every shell RC it finds (`.zshenv`, `.zshrc`, `.bashrc`, …), so every shell-launched agent inherits the trust.
 
 ccft trust only applies to ccft-configured hosts. By default, the installation configures only known AI providers, which ensures your other network activites are not intercepted at all.
 

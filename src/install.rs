@@ -58,28 +58,7 @@ pub fn install(label: Option<String>) -> Result<(), Box<dyn std::error::Error>> 
     // 1. Copy ourselves to the install location if running from elsewhere.
     if src != dst {
         let _ = service::bootout();
-        if dst.exists() {
-            fs::remove_file(&dst)?;
-        }
-        fs::copy(&src, &dst)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&dst)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&dst, perms)?;
-        }
-
-        // macOS gotcha: overwriting a code-signed binary in place leaves
-        // the kernel's path-cache flagging that location as "tampered" →
-        // future invocations get SIGKILLed before main() runs. Re-sign
-        // adhoc at the new path. Failure here is non-fatal.
-        #[cfg(target_os = "macos")]
-        {
-            let _ = Command::new("codesign")
-                .args(["--force", "--sign", "-", dst.to_string_lossy().as_ref()])
-                .status();
-        }
+        place_binary(&src, &dst)?;
         println!("✓ installed binary {}", dst.display());
     } else {
         println!("✓ binary already at {}", dst.display());
@@ -102,13 +81,13 @@ pub fn install(label: Option<String>) -> Result<(), Box<dyn std::error::Error>> 
         if let Some(obj) = default_cfg.as_object_mut() {
             obj.insert(
                 "hosts".into(),
-                DEFAULT_HOSTS
-                    .iter()
-                    .map(|h| serde_json::json!(h))
-                    .collect(),
+                DEFAULT_HOSTS.iter().map(|h| serde_json::json!(h)).collect(),
             );
         }
-        fs::write(&cfg_path, serde_json::to_string_pretty(&default_cfg)? + "\n")?;
+        fs::write(
+            &cfg_path,
+            serde_json::to_string_pretty(&default_cfg)? + "\n",
+        )?;
         println!("✓ wrote default config {}", cfg_path.display());
     } else {
         println!("✓ config exists at {}", cfg_path.display());
@@ -146,7 +125,86 @@ pub fn install(label: Option<String>) -> Result<(), Box<dyn std::error::Error>> 
     if !paths::is_isolated() {
         trust::print_instructions();
     }
+    // Auto-update lock: a completing install clears it (best-effort).
+    let _ = fs::remove_file(paths::share_dir().join("updating.lock"));
     Ok(())
+}
+
+/// Atomically install `src` at `dst`: copy to a temp name in the same dir,
+/// chmod, adhoc re-sign the temp, then rename over `dst`. Renaming in gives a
+/// fresh inode/link so macOS's code-signing path cache never sees a binary
+/// that was overwritten in place (which would SIGKILL future launches), and
+/// `dst` is never left missing.
+pub fn place_binary(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = dst.parent().ok_or("install dir has no parent")?;
+    fs::create_dir_all(dir)?;
+
+    let tmp = dir.join(format!(".ccft.new.{}", std::process::id()));
+    fs::copy(src, &tmp)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&tmp)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&tmp, perms)?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("codesign")
+            .args(["--force", "--sign", "-", tmp.to_string_lossy().as_ref()])
+            .status();
+    }
+
+    fs::rename(&tmp, dst)?;
+    Ok(())
+}
+
+/// Cargo-install parity: any `ccft` binary not living at the install location
+/// (i.e. freshly `cargo install`ed into ~/.cargo/bin) provisions itself —
+/// copies the binary over any existing/legacy install and registers the
+/// service unit. Returns true when it changed something.
+///
+/// Cheap in the steady state: skips entirely when already running from the
+/// install location, and a byte-compare decides whether a re-place is needed.
+pub fn ensure_installed() -> Result<bool, Box<dyn std::error::Error>> {
+    if paths::is_isolated() {
+        return Ok(false);
+    }
+    let src = std::env::current_exe()?;
+    let dst = paths::install_bin();
+    if src == dst {
+        return Ok(false);
+    }
+
+    let stale = !dst.exists()
+        || fs::read(&src)
+            .map(|s| s != fs::read(&dst).unwrap_or_default())
+            .unwrap_or(true);
+
+    let mut changed = false;
+    if stale {
+        let _ = service::bootout();
+        place_binary(&src, &dst)?;
+        println!("✓ replaced install binary {}", dst.display());
+        changed = true;
+    }
+
+    if !service::is_registered() {
+        service::write_unit(&dst)?;
+        service::register()?;
+        println!(
+            "✓ {} service '{}' registered",
+            service::manager_name(),
+            service::label()
+        );
+        changed = true;
+    }
+    Ok(changed)
 }
 
 /// Read the existing config (if any), update / insert `service_label`, and
@@ -171,7 +229,8 @@ fn persist_service_label(
         let port = if paths::is_dev() { 7179 } else { 7178 };
         obj.entry("host").or_insert(serde_json::json!("127.0.0.1"));
         obj.entry("port").or_insert(serde_json::json!(port));
-        obj.entry("system_override").or_insert(serde_json::json!(""));
+        obj.entry("system_override")
+            .or_insert(serde_json::json!(""));
         obj.entry("pain").or_insert(serde_json::json!(false));
         obj.entry("ledger").or_insert(serde_json::json!(true));
     }

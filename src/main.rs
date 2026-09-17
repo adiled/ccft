@@ -111,6 +111,23 @@ enum Cmd {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    // One-time filesystem migration + cargo-install parity. Skip for
+    // install/uninstall/dev, which drive the provisioning themselves.
+    let self_provisioning = matches!(
+        cli.command,
+        Some(Cmd::Install { .. }) | Some(Cmd::Uninstall) | Some(Cmd::Dev)
+    );
+    if !self_provisioning {
+        let _migrated = config::paths::migrate_legacy_state();
+        let no_subcommand = cli.command.is_none();
+        let going_to_run = matches!(cli.command, Some(Cmd::Run))
+            || (no_subcommand && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
+        if install::ensure_installed()? && going_to_run {
+            println!("✓ service re-provisioned with the current binary — exiting for the service to take over");
+            return Ok(());
+        }
+    }
+
     let no_subcommand = cli.command.is_none();
     let going_to_tui = matches!(cli.command, Some(Cmd::Tui { .. }))
         || (no_subcommand && std::io::IsTerminal::is_terminal(&std::io::stdout()));

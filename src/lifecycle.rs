@@ -84,9 +84,10 @@ pub fn start(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     if paths::is_isolated() {
         return Err("isolated mode — start/stop are no-ops; use `ccft run` directly".into());
     }
+    crate::install::ensure_installed()?;
     service::kickstart()?;
     println!("✓ kicked {} service", service::manager_name());
-    for _ in 0..20 {
+    for _ in 0..50 {
         if port_bound(&cfg.host, cfg.port).is_some() {
             println!("✓ bound on {}:{}", cfg.host, cfg.port);
             return Ok(());
@@ -94,7 +95,7 @@ pub fn start(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         std::thread::sleep(Duration::from_millis(100));
     }
     Err(format!(
-        "service kicked but not bound to {}:{} after 2s — check `ccft logs`",
+        "service kicked but not bound to {}:{} after 5s — check `ccft logs`",
         cfg.host, cfg.port
     )
     .into())
@@ -110,9 +111,7 @@ pub fn stop(_cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     service::bootout()?;
-    println!(
-        "✓ stopped (will restart on next login unless you `ccft uninstall`)"
-    );
+    println!("✓ stopped (will restart on next login unless you `ccft uninstall`)");
     Ok(())
 }
 

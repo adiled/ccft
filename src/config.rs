@@ -253,9 +253,31 @@ pub mod paths {
         std::env::var_os("CCFT_DEV").is_some()
     }
 
+    /// Current trust/CA directory. `~/.ccft` since 1.10.x.
     pub fn ca_dir() -> PathBuf {
+        root().join(".ccft")
+    }
+
+    /// Legacy pre-1.10 location: `~/.cc-flytrap`. Kept so a one-time
+    /// migration can rename it before the CA is generated elsewhere.
+    pub fn legacy_ca_dir() -> PathBuf {
         root().join(".cc-flytrap")
     }
+
+    /// One-time migration: if the new `~/.ccft` dir doesn't exist but the
+    /// legacy `~/.cc-flytrap` does, rename it (losing nothing). Returns true
+    /// when a migration happened. Called early in `main()` and from
+    /// `trust::ensure_ca()` so both first-run and every-command paths heal.
+    pub fn migrate_legacy_state() -> std::io::Result<bool> {
+        let new_dir = ca_dir();
+        let old_dir = legacy_ca_dir();
+        if new_dir.exists() || !old_dir.exists() {
+            return Ok(false);
+        }
+        std::fs::rename(&old_dir, &new_dir)?;
+        Ok(true)
+    }
+
     pub fn ca_pem() -> PathBuf {
         ca_dir().join("ca.pem")
     }

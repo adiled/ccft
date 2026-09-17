@@ -23,12 +23,12 @@ From source (`rustc` ≥ 1.95 — `brew install rust` on mac, distro package on 
 
 ```bash
 make install         # build + ccft install
-ccft trust --apply   # write env into ~/.cc-flytrap/ccft.env + source from shell RCs
+ccft trust --apply   # write env into ~/.ccft/ccft.env + source from shell RCs
 ```
 
 `ccft install` does five things, idempotently:
 
-1. Generates a self-signed CA at `~/.cc-flytrap/{ca.pem,ca.key}` (if missing).
+1. Generates a self-signed CA at `~/.ccft/{ca.pem,ca.key}` (if missing).
 2. Writes a default config at `~/.config/ccft/ccft.json` (if missing).
 3. Copies the running binary to `~/.local/bin/ccft`.
 4. Writes the platform's service unit pointing at the installed binary:
@@ -39,10 +39,10 @@ ccft trust --apply   # write env into ~/.cc-flytrap/ccft.env + source from shell
 After install, the flytrap is running on `127.0.0.1:7178`. To route an agent through it:
 
 ```bash
-ccft trust --apply   # writes HTTPS_PROXY + NODE_EXTRA_CA_CERTS into ~/.cc-flytrap/ccft.env, sourced from shell RCs
+ccft trust --apply   # writes HTTPS_PROXY + NODE_EXTRA_CA_CERTS into ~/.ccft/ccft.env, sourced from shell RCs
 # — or, manually —
 export HTTPS_PROXY=http://127.0.0.1:7178
-export NODE_EXTRA_CA_CERTS=$HOME/.cc-flytrap/ca.pem
+export NODE_EXTRA_CA_CERTS=$HOME/.ccft/ca.pem
 ```
 
 `ccft trust --revoke` reverses the env edits cleanly.
@@ -69,7 +69,7 @@ installed binary. **Keeps** the CA cert, config, and ledger so a re-install
 picks up where you left off. To purge:
 
 ```bash
-rm -rf ~/.cc-flytrap ~/.config/ccft ~/.local/share/ccft
+rm -rf ~/.ccft ~/.config/ccft ~/.local/share/ccft
 ```
 
 ## Lifecycle
@@ -103,6 +103,6 @@ proxy locally at its own accord with `CCFT_DEV=1 ccft run` to verify things.
 | Ledger | `~/.local/share/ccft/ledger.jsonl` | `~/.local/share/ccft/dev/ledger.jsonl` |
 | Service unit | `com.ccft` | `com.ccft.dev` |
 | Process | launchd-managed | launchd-managed; run `CCFT_DEV=1 ccft run` for foreground |
-| CA | shared `~/.cc-flytrap/ca.pem` | shared `~/.cc-flytrap/ca.pem` |
+| CA | shared `~/.ccft/ca.pem` | shared `~/.ccft/ca.pem` |
 
-To use dev: `HTTPS_PROXY=http://127.0.0.1:7179 NODE_EXTRA_CA_CERTS=$HOME/.cc-flytrap/ca.pem your-agent -p "..."`. The CA is shared so trust setup carries over.
+To use dev: `HTTPS_PROXY=http://127.0.0.1:7179 NODE_EXTRA_CA_CERTS=$HOME/.ccft/ca.pem your-agent -p "..."`. The CA is shared so trust setup carries over.

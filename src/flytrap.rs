@@ -67,8 +67,8 @@ pub async fn load_or_generate_ca() -> Result<(KeyPair, String), Box<dyn std::err
     let mut params = CertificateParams::default();
     params.distinguished_name = {
         let mut dn = DistinguishedName::new();
-        dn.push(DnType::CommonName, "cc-flytrap CA");
-        dn.push(DnType::OrganizationName, "cc-flytrap");
+        dn.push(DnType::CommonName, "ccft CA");
+        dn.push(DnType::OrganizationName, "ccft");
         dn
     };
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);

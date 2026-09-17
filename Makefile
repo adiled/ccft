@@ -1,7 +1,7 @@
 # ccft - an agentic self improvement tool
 #
 # One artifact: the binary. No install dir, no rsync.
-# All filesystem state under: ~/.config/ccft/, ~/.local/share/ccft/, ~/.cc-flytrap/
+# All filesystem state under: ~/.config/ccft/, ~/.local/share/ccft/, ~/.ccft/
 
 CARGO    ?= cargo
 BIN_NAME ?= ccft

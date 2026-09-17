@@ -65,7 +65,7 @@ TUI brainrot panel reads this file directly.
 | `~/.local/bin/ccft` | `ccft install` | The binary itself |
 | `~/Library/LaunchAgents/com.ccft.plist` | `ccft install` (macOS) | launchd unit |
 | `~/.config/systemd/user/com.ccft.service` | `ccft install` (Linux) | systemd-user unit |
-| `~/.cc-flytrap/ca.pem`, `ca.key` | `ccft install` (or first run) | Self-signed CA |
+| `~/.ccft/ca.pem`, `ca.key` | `ccft install` (or first run) | Self-signed CA |
 | `~/.config/ccft/ccft.json` | user / `ccft install` (default) | Production config |
 | `~/.config/ccft/dev.json` | user (optional) | Dev config |
 | `~/.local/share/ccft/ledger.jsonl` | runtime | Production ledger |
@@ -87,7 +87,7 @@ TUI brainrot panel reads this file directly.
 | `ccft stop` | `launchctl bootout` |
 | `ccft restart` | bootout + bootstrap |
 | `ccft trust` | Print env vars for routing any coding agent through ccft |
-| `ccft trust --apply` | Write proxy + CA env into `~/.cc-flytrap/ccft.env`, source it from every shell RC (with backup) |
+| `ccft trust --apply` | Write proxy + CA env into `~/.ccft/ccft.env`, source it from every shell RC (with backup) |
 | `ccft trust --revoke` | Remove the sourced env block from shell RCs (with backup) |
 | `ccft trust --ca` | Dump CA PEM to stdout |
 | `ccft logs [-n 50]` | Tail `launchd.log` |

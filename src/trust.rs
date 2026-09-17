@@ -16,6 +16,7 @@ const SHELL_RCS: &[&str] = &[
 ];
 
 pub fn ensure_ca() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = paths::migrate_legacy_state();
     if paths::ca_pem().exists() && paths::ca_key().exists() {
         return Ok(());
     }
