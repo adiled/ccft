@@ -12,5 +12,4 @@ debug_system.json
 
 # Local-only files (intentionally untracked)
 AGENTS.md
-release.sh
 dev.sh
