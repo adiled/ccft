@@ -221,6 +221,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
         lines.push(Line::from(""));
         let mut spans: Vec<Span> = vec![section_label("models ", style::SUBTLE)];
+        let solo = sorted.len() == 1;
         for (idx, (m, t)) in sorted.iter().take(3).enumerate() {
             if idx > 0 {
                 spans.push(sep());
@@ -234,8 +235,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 (*m).clone(),
                 Style::default().fg(style::VIOLET),
             ));
-            spans.push(connector(" ".to_string()));
-            spans.push(num(format!("{:.0}%", pct)));
+            if !solo {
+                spans.push(connector(" ".to_string()));
+                spans.push(num(format!("{:.0}%", pct)));
+            }
         }
         lines.push(Line::from(spans));
     }

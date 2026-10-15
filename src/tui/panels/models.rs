@@ -21,7 +21,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let mut sorted: Vec<(&String, u64)> = toks.into_iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     let avail = inner.width as usize;
-    let name_width = avail.saturating_sub(6);
+    let solo = sorted.len() == 1;
+    let name_width = if solo { avail.saturating_sub(2) } else { avail.saturating_sub(6) };
 
     let mut lines: Vec<Line> = Vec::new();
     let max_rows = (inner.height as usize).min(7);
@@ -41,12 +42,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             name = name.chars().take(name_width).collect();
         }
         let padded = format!("{:<width$}", name, width = name_width);
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             dot,
             Span::raw(" "),
             Span::styled(padded, style::label()),
-            Span::styled(format!("{:>3}%", pct as u32), style::value()),
-        ]));
+        ];
+        if !solo {
+            spans.push(Span::styled(format!("{:>3}%", pct as u32), style::value()));
+        }
+        lines.push(Line::from(spans));
     }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled("(no traffic)", style::dim())));
