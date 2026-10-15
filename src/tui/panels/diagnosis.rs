@@ -59,7 +59,7 @@ fn connector(text: String) -> Span<'static> {
 }
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
-    let inner = style::panel(f, area, "diagnosis");
+    let inner = style::panel(f, area, "deep dive");
 
     let bd = score_breakdown(&app.agg, &app.baseline);
     let bot = bd.b_shrunk as u32;
