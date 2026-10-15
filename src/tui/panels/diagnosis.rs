@@ -204,9 +204,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // ── models ──────────────────────────────────────────────────────────
     if !app.agg.records.is_empty() {
         let mut toks: HashMap<&String, u64> = HashMap::new();
+        let mut lat: HashMap<&String, (u64, u64)> = HashMap::new();
         for r in &app.agg.records {
             if let Some(m) = &r.model {
                 *toks.entry(m).or_insert(0) += r.tot;
+                let e = lat.entry(m).or_insert((0, 0));
+                e.0 += r.lat;
+                e.1 += 1;
             }
         }
         let total: u64 = toks.values().sum();
@@ -232,8 +236,60 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 spans.push(connector(" ".to_string()));
                 spans.push(num(format!("{:.0}%", pct)));
             }
+            let avg = lat.get(m).map(|(a, b)| *a as f64 / (*b).max(1) as f64).unwrap_or(0.0);
+            spans.push(connector(" ".to_string()));
+            spans.push(Span::styled(
+                style::fmt_lat(avg.round() as u64),
+                Style::default().fg(style::heat_color(avg)),
+            ));
         }
         lines.push(Line::from(spans));
+    }
+    {
+        lines.push(Line::from(""));
+        let th: u64 = app.agg.records.iter().map(|r| r.th_ch).sum();
+        let tr: u64 = app.agg.records.iter().map(|r| r.tr_ch).sum();
+        let nvt = if app.agg.records.is_empty() {
+            0.0
+        } else {
+            app.agg.records.iter().map(|r| r.nvt).sum::<f64>() / app.agg.records.len() as f64 * 100.0
+        };
+        lines.push(Line::from(vec![
+            section_label("vol    ", style::SUBTLE),
+            connector("in ".to_string()),
+            num(format!("{}", app.agg.r#in)),
+            sep(),
+            connector("out ".to_string()),
+            num(format!("{}", app.agg.out)),
+            sep(),
+            connector("sess ".to_string()),
+            num(format!("{}", app.agg.sessions.len())),
+        ]));
+        lines.push(Line::from(vec![
+            section_label("tex    ", style::SUBTLE),
+            connector("think ".to_string()),
+            data(format!("{}", th)),
+            sep(),
+            connector("tool ".to_string()),
+            data(format!("{}", tr)),
+            sep(),
+            connector("novelty ".to_string()),
+            num(format!("{:.0}%", nvt)),
+        ]));
+        let cov = crate::ledger_read::compute_coverage(
+            &crate::ledger_read::load_state_events(),
+            app.range.since,
+            app.range.until,
+        );
+        let apct = if cov.total_s > 0.0 { cov.active_s / cov.total_s * 100.0 } else { 100.0 };
+        lines.push(Line::from(vec![
+            section_label("cov    ", style::SUBTLE),
+            connector("active ".to_string()),
+            num(format!("{:.0}%", apct)),
+            sep(),
+            connector("gaps ".to_string()),
+            num(format!("{}", cov.off_intervals.len())),
+        ]));
     }
 
     // Cluster into the upper-left of the panel. Text gets the full panel
