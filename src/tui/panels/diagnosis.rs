@@ -66,33 +66,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let drv = bd.d_shrunk as u32;
     let mut lines: Vec<Line> = Vec::new();
 
-    // ── vibe ────────────────────────────────────────────────────────────
-    lines.push(Line::from(vec![
-        section_label("vibe    ", style::SUBTLE),
-        Span::styled(
-            format!("bot {}", vibe_label(bot)),
-            Style::default()
-                .fg(style::score_color(bot))
-                .add_modifier(Modifier::BOLD),
-        ),
-        sep(),
-        Span::styled(
-            format!("driver {}", vibe_label(drv)),
-            Style::default()
-                .fg(style::score_color(drv))
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
-
-    // ── note ────────────────────────────────────────────────────────────
-    if let Some(d) = diagnosis(&bd) {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            section_label("note   ", style::SUBTLE),
-            note(d.to_string()),
-        ]));
-    }
-
     // ── split summary (driver vs bot turns) ─────────────────────────────
     if let Some(s) = compute_split(app) {
         lines.push(Line::from(""));
@@ -164,6 +137,34 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             prefix.extend(sub_bits);
             lines.push(Line::from(prefix));
         }
+    }
+
+
+    // ── vibe ────────────────────────────────────────────────────────────
+    lines.push(Line::from(vec![
+        section_label("vibe    ", style::SUBTLE),
+        Span::styled(
+            format!("bot {}", vibe_label(bot)),
+            Style::default()
+                .fg(style::score_color(bot))
+                .add_modifier(Modifier::BOLD),
+        ),
+        sep(),
+        Span::styled(
+            format!("driver {}", vibe_label(drv)),
+            Style::default()
+                .fg(style::score_color(drv))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    // ── note ────────────────────────────────────────────────────────────
+    if let Some(d) = diagnosis(&bd) {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            section_label("note   ", style::SUBTLE),
+            note(d.to_string()),
+        ]));
     }
 
     // ── peaks ───────────────────────────────────────────────────────────
