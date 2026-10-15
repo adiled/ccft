@@ -257,10 +257,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             section_label("vol    ", style::SUBTLE),
             connector("in ".to_string()),
-            num(format!("{}", app.agg.r#in)),
+            num(compact(app.agg.r#in)),
             sep(),
             connector("out ".to_string()),
-            num(format!("{}", app.agg.out)),
+            num(compact(app.agg.out)),
             sep(),
             connector("sess ".to_string()),
             num(format!("{}", app.agg.sessions.len())),
@@ -409,6 +409,18 @@ fn compute_split(app: &App) -> Option<SplitSummary> {
         cache_reuse_n: bot_cr,
         cache_total: bot_in + bot_cr + bot_cc,
     })
+}
+
+fn compact(n: u64) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.1}B", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 fn fmt_dur(secs: f64) -> String {
