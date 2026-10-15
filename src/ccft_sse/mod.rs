@@ -292,8 +292,7 @@ impl<B> SseTap<B> {
                 self.usage.input_tokens = u_u64(u, "input_tokens");
                 self.usage.output_tokens = u_u64(u, "output_tokens");
                 if let Some(det) = u.get("input_tokens_details") {
-                    self.usage.cache_read_input_tokens += u_u64(det, "cached_tokens");
-                    self.usage.cache_creation_input_tokens += u_u64(det, "cached_tokens");
+                    self.usage.cache_read_input_tokens = u_u64(det, "cached_tokens");
                 }
             }
         }
@@ -301,6 +300,9 @@ impl<B> SseTap<B> {
         if let Some(u) = d.get("usage") {
             self.usage.input_tokens = u_u64(u, "input_tokens");
             self.usage.output_tokens = u_u64(u, "output_tokens");
+            if let Some(det) = u.get("input_tokens_details") {
+                self.usage.cache_read_input_tokens = u_u64(det, "cached_tokens");
+            }
         }
     }
 
