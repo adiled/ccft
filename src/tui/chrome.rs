@@ -27,7 +27,7 @@ pub fn header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(" // ", style::dim()),
         Span::styled(env!("CARGO_PKG_VERSION"), style::label()),
         Span::raw("  "),
-        Span::styled("ONLINE", style::title()),
+        Span::styled(if pid > 0 { "ONLINE" } else { "OFFLINE" }, style::title()),
     ]);
 
     let right = Line::from(vec![
@@ -59,7 +59,7 @@ pub fn keybar(f: &mut Frame, area: Rect, _app: &App) {
 
     // Left half: vim-style command list with leading-char in pink.
     let mut left: Vec<Span> = Vec::new();
-    push_vim(&mut left, ":help", 1);
+    push_vim(&mut left, "? help", 0);
     left.push(gap());
     push_vim(&mut left, ":q quit", 1);
     left.push(gap());
@@ -76,10 +76,6 @@ pub fn keybar(f: &mut Frame, area: Rect, _app: &App) {
     push_vim(&mut left, ":s sessions", 1);
     left.push(Span::raw(" "));
     push_vim(&mut left, ":p perf", 1);
-    left.push(gap());
-    push_vim(&mut left, ":/ search", 1);
-    left.push(Span::raw(" "));
-    push_vim(&mut left, ":! filter", 1);
 
     // Right half: scroll/range hints (no pink — they're modal hints).
     let right: Vec<Span> = vec![

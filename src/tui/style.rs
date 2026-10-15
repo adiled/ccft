@@ -210,6 +210,10 @@ const NEON_MAGENTA: Color = Color::Rgb(0xe2, 0x2a, 0x78);
 const NEON_CYAN: Color = Color::Rgb(0x2c, 0xa6, 0xc4);
 
 pub fn panel(f: &mut Frame, area: Rect, label: &str) -> Rect {
+    panel_with(f, area, label, 2)
+}
+
+pub fn panel_with(f: &mut Frame, area: Rect, label: &str, pad: u16) -> Rect {
     if area.width < 4 || area.height < 3 {
         return area;
     }
@@ -241,11 +245,13 @@ pub fn panel(f: &mut Frame, area: Rect, label: &str) -> Rect {
         }
     }
 
+    let px = pad.min(area.width.saturating_sub(2));
+    let py = pad.min(area.height.saturating_sub(2));
     Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
+        x: area.x + px,
+        y: area.y + py,
+        width: area.width.saturating_sub(px * 2),
+        height: area.height.saturating_sub(py * 2),
     }
 }
 

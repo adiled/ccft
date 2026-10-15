@@ -95,7 +95,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     tile(
         f,
         cells[2],
-        "LAT",
+        "LATENCY",
         &style::fmt_lat(p50),
         lat_word,
         &series.p99, // sparkline still shows p99-per-bucket for tail awareness
@@ -150,9 +150,23 @@ fn tile(
     hue: Color,
 ) {
     // Empty title — the tile renders its own bigger label below the chrome.
-    let inner = style::panel(f, area, "");
+    let inner = style::panel_with(f, area, "", 1);
     if inner.width == 0 || inner.height == 0 {
         return;
+    }
+    {
+        let name = label.to_uppercase();
+        let w = name.chars().count() as u16;
+        if w < area.width {
+            let tx = area.x + (area.width - w) / 2;
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    name,
+                    Style::default().fg(hue).add_modifier(Modifier::BOLD),
+                ))),
+                Rect { x: tx, y: area.y, width: w, height: 1 },
+            );
+        }
     }
 
     // Adaptive vertical layout. We always render the title; everything
@@ -163,28 +177,12 @@ fn tile(
     //   height == 2   →  title / value
     //   height == 1   →  title only
     let h = inner.height;
-    let title_y = inner.y;
     let value_y = inner.y + 1;
     let sub_y = inner.y + 2;
-    let spark_y = inner.y + h - 1;
-
-    // Title — bold + hue, centered.
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            label.to_string(),
-            Style::default().fg(hue).add_modifier(Modifier::BOLD),
-        )))
-        .alignment(Alignment::Center),
-        Rect {
-            x: inner.x,
-            y: title_y,
-            width: inner.width,
-            height: 1,
-        },
-    );
-
-    // Value — same hue, no bold (per the global "values aren't bold" rule).
-    if h >= 2 {
+    let spark_top = if h >= 4 { inner.y + 3 } else { inner.y + 2 };
+    let spark_bot = inner.y + h - 1;
+    let spark_h = spark_bot.saturating_sub(spark_top) + 1;
+    if h >= 1 {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 value.to_string(),
@@ -200,8 +198,6 @@ fn tile(
         );
     }
 
-    // Sub-label — dim grey, centered. Only renders if it doesn't collide
-    // with the sparkline row (need height >= 4).
     if h >= 4 {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(sub.to_string(), style::dim())))
@@ -218,25 +214,37 @@ fn tile(
     // Sparkline — paint into the bottom row directly. Skips when height
     // is too small to fit alongside title + value.
     if h >= 3 {
-        paint_sparkline(f.buffer_mut(), inner.x, spark_y, inner.width, series, hue);
+        paint_sparkline(f.buffer_mut(), inner.x, spark_top, spark_h, inner.width, series, hue);
     }
 }
 
 // ─── Sparkline rendering ─────────────────────────────────────────────────────
 
-fn paint_sparkline(buf: &mut Buffer, x: u16, y: u16, width: u16, series: &[f32], hue: Color) {
+fn paint_sparkline(buf: &mut Buffer, x: u16, top: u16, height: u16, width: u16, series: &[f32], hue: Color) {
     const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let max_w = width as usize;
     for (i, &v) in series.iter().take(max_w).enumerate() {
         let v = v.clamp(0.0, 1.0);
-        if v < 0.05 {
-            continue; // empty bucket — leave the cell as substrate
+        if v < 0.02 {
+            continue;
         }
-        let idx = ((v * 7.99).floor() as usize).min(7);
+        let total = v * height as f32 * 8.0;
+        let full = (total / 8.0).floor() as u16;
+        let rem = (total % 8.0).floor() as usize;
         let cx = x + i as u16;
-        if let Some(cell) = buf.cell_mut((cx, y)) {
-            cell.set_char(BARS[idx]);
-            cell.set_style(Style::default().fg(hue));
+        for r in 0..height {
+            let cy = top + height - 1 - r;
+            if r < full {
+                if let Some(cell) = buf.cell_mut((cx, cy)) {
+                    cell.set_char('█');
+                    cell.set_style(Style::default().fg(hue));
+                }
+            } else if r == full && rem > 0 {
+                if let Some(cell) = buf.cell_mut((cx, cy)) {
+                    cell.set_char(BARS[rem.min(7)]);
+                    cell.set_style(Style::default().fg(hue));
+                }
+            }
         }
     }
 }

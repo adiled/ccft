@@ -396,7 +396,7 @@ fn body(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
     //   right     (22%)   = LEDGER (full height)              "surveilling"
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .spacing(1)
+        .spacing(2)
         .constraints([
             Constraint::Percentage(14),
             Constraint::Percentage(64),

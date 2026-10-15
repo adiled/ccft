@@ -326,8 +326,52 @@ fn help_lines() -> Vec<Line<'static>> {
             Span::styled("force refresh", style::label()),
         ]),
         Line::from(vec![
+            Span::styled("  ?  ", style::key_hint()),
+            Span::styled("this help", style::label()),
+        ]),
+        Line::from(vec![
             Span::styled("  Esc / q  ", style::key_hint()),
             Span::styled("close overlay / quit TUI", style::label()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Panels", style::title())),
+        Line::from(vec![
+            Span::styled("  heat req  ", style::key_hint()),
+            Span::styled("requests per time bucket", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  ledger  ", style::key_hint()),
+            Span::styled("drv-in = your typed chars, bot-out = reply tokens", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  models %  ", style::key_hint()),
+            Span::styled("token share in range", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  chart y  ", style::key_hint()),
+            Span::styled("vibe 0-100, 50 = your normal", style::label()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Deep dive labels", style::title())),
+        Line::from(vec![
+            Span::styled("  vol  ", style::key_hint()),
+            Span::styled("in/out token totals, sess = sessions", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  tex  ", style::key_hint()),
+            Span::styled("think/reasoning chars, tool output chars, novelty", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  cov  ", style::key_hint()),
+            Span::styled("ledger active share, gaps = off windows", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  split  ", style::key_hint()),
+            Span::styled("drv/bot turn share and counts", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  loop/gap  ", style::key_hint()),
+            Span::styled("bot turns per loop p50/p90, median driver gap", style::label()),
         ]),
     ]
 }

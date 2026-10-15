@@ -41,7 +41,7 @@ fn bucket_coin(idx: usize) -> bool {
 }
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
-    let inner = style::panel(f, area, "brainrot");
+    let inner = style::panel_with(f, area, "brainrot", 1);
 
     // Vertical layout — four sections, all uniform 1-row gaps:
     //
@@ -67,8 +67,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ])
         .split(inner);
 
-    let chart_area = pad_horizontal(split[2], 3, 2);
-    let xlabels_area = pad_horizontal(split[3], 3, 2);
+    let chart_area = pad_horizontal(split[2], 1, 1);
+    let xlabels_area = pad_horizontal(split[3], 1, 1);
 
     range_chips(f, split[0], app);
     chart(f, chart_area, app);
@@ -262,16 +262,31 @@ fn chart(f: &mut Frame, area: Rect, app: &App) {
         .bounds([since, until])
         .style(Style::default().fg(style::GREY));
 
+    let mut ymin: f64 = 100.0;
+    let mut ymax: f64 = 0.0;
+    for (_, y) in bot_pts.iter().chain(drv_pts.iter()) {
+        ymin = ymin.min(*y);
+        ymax = ymax.max(*y);
+    }
+    if ymax < ymin {
+        ymin = 0.0;
+        ymax = 100.0;
+    }
+    let pad = ((ymax - ymin) * 0.25 + 4.0).min(20.0);
+    ymin = (ymin - pad).clamp(0.0, 100.0);
+    ymax = (ymax + pad).clamp(0.0, 100.0);
+    if ymax - ymin < 20.0 {
+        let mid = ((ymin + ymax) / 2.0).clamp(0.0, 100.0);
+        ymin = (mid - 10.0).clamp(0.0, 100.0);
+        ymax = (mid + 10.0).clamp(0.0, 100.0);
+    }
+    let ymid = (ymin + ymax) / 2.0;
     let y_axis = Axis::default()
-        .bounds([0.0, 100.0])
-        // Three labels at 0/50/100 — earlier attempt to drop "100" left
-        // the top label saying "50" at the y=100 position, which is
-        // semantically wrong. Two intervals (0→50, 50→100) still rounds
-        // cleanly on any chart height (only need chart_h % 2 == 0).
+        .bounds([ymin, ymax])
         .labels(vec![
-            Span::styled("  0", style::dim()),
-            Span::styled(" 50", style::dim()),
-            Span::styled("100", style::dim()),
+            Span::styled(format!("{:>4}", ymin.round() as i64), style::dim()),
+            Span::styled(format!("{:>4}", ymid.round() as i64), style::dim()),
+            Span::styled(format!("{:>4}", ymax.round() as i64), style::dim()),
         ])
         .style(Style::default().fg(style::GREY));
 

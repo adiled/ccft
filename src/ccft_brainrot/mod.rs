@@ -1214,13 +1214,13 @@ pub fn split_summary(drv_pct: f64, bot_pct: f64, drv_n: u64, bot_n: u64) -> &'st
     } else if bot_n == 0 {
         "pure prompting: no tool loops"
     } else if drv_pct >= 80.0 {
-        "driver-heavy: lots of driving, agent doing little tool work"
+        "driver-heavy: lots of driving, bot doing little tool work"
     } else if bot_pct >= 80.0 {
-        "bot-heavy: agent grinding through tool loops"
+        "bot-heavy: bot grinding through tool loops"
     } else if drv_pct >= 60.0 {
-        "driver-leaning: driving more than the agent is iterating"
+        "driver-leaning: driving more than the bot is iterating"
     } else if bot_pct >= 60.0 {
-        "bot-leaning: agent doing more tool work than you're typing"
+        "bot-leaning: bot doing more tool work than you're typing"
     } else {
         "balanced: driver steers, agent acts"
     }

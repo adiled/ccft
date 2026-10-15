@@ -2,7 +2,7 @@
 //! Driver/bot dynamics alongside vibe label and operational notes.
 
 use crate::brainrot::aggregate::{
-    classify_turns_prob, diagnosis, score_breakdown, short_model, split_summary, vibe_label,
+    classify_turns_prob, diagnosis, score_breakdown, split_summary, vibe_label,
     TurnKind,
 };
 use crate::tui::style;
@@ -59,16 +59,15 @@ fn connector(text: String) -> Span<'static> {
 }
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
-    let inner = style::panel(f, area, "diagnosis");
+    let inner = style::panel(f, area, "deep dive");
 
     let bd = score_breakdown(&app.agg, &app.baseline);
     let bot = bd.b_shrunk as u32;
     let drv = bd.d_shrunk as u32;
     let mut lines: Vec<Line> = Vec::new();
 
-    // ── vibe ────────────────────────────────────────────────────────────
     lines.push(Line::from(vec![
-        section_label("vibe    ", style::PINK),
+        section_label("vibe    ", style::SUBTLE),
         Span::styled(
             format!("bot {}", vibe_label(bot)),
             Style::default()
@@ -83,45 +82,40 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
-
-    // ── note ────────────────────────────────────────────────────────────
     if let Some(d) = diagnosis(&bd) {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            section_label("note   ", style::GOLD),
+            section_label("note   ", style::SUBTLE),
             note(d.to_string()),
         ]));
     }
-
-    // ── split summary (driver vs bot turns) ─────────────────────────────
     if let Some(s) = compute_split(app) {
         lines.push(Line::from(""));
         let summary = split_summary(s.drv_pct, s.bot_pct, s.drv_n, s.bot_n);
-        // "split   23/77   5 drv  17 bot    ·  bot-heavy …"
-        // Color the percentages by their owning side: driver=CYAN, bot=PINK.
         lines.push(Line::from(vec![
-            section_label("split  ", style::CYAN),
+            section_label("split  ", style::SUBTLE),
+            note(summary.to_string()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("       ", style::dim()),
+            connector("drv ".to_string()),
             Span::styled(
-                format!("{}", s.drv_pct as u64),
+                format!("{:.0}%", s.drv_pct),
                 Style::default()
                     .fg(style::CYAN)
                     .add_modifier(Modifier::BOLD),
             ),
-            connector("/".to_string()),
+            connector(format!(" ({})", s.drv_n)),
+            sep(),
+            connector("bot ".to_string()),
             Span::styled(
-                format!("{}", s.bot_pct as u64),
+                format!("{:.0}%", s.bot_pct),
                 Style::default()
                     .fg(style::PINK)
                     .add_modifier(Modifier::BOLD),
             ),
-            connector(format!("   {} drv  ", s.drv_n)),
-            connector(format!("{} bot", s.bot_n)),
-            sep(),
-            note(summary.to_string()),
+            connector(format!(" ({})", s.bot_n)),
         ]));
-
-        // Loop length + driver gap median + cache offload, on a sub-line
-        // when present.
         let mut sub_bits: Vec<Span> = Vec::new();
         if !s.loop_lens.is_empty() {
             let p50 = s.loop_lens[s.loop_lens.len() / 2];
@@ -165,7 +159,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(prefix));
         }
     }
-
     // ── peaks ───────────────────────────────────────────────────────────
     if !app.agg.by_hour.is_empty() {
         let peak = app
@@ -188,7 +181,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             .unwrap_or((0, 0.0));
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            section_label("peaks  ", style::LIME),
+            section_label("peaks  ", style::SUBTLE),
             connector("busy ".to_string()),
             num(format!("{:02}:00", peak.0)),
             connector(" (".to_string()),
@@ -209,29 +202,94 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // ── models ──────────────────────────────────────────────────────────
-    if !app.agg.models.is_empty() {
-        let total: u64 = app.agg.models.values().sum();
-        let mut sorted: Vec<(&String, &u64)> = app.agg.models.iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(a.1));
+    if !app.agg.records.is_empty() {
+        let mut toks: HashMap<&String, u64> = HashMap::new();
+        let mut lat: HashMap<&String, (u64, u64)> = HashMap::new();
+        for r in &app.agg.records {
+            if let Some(m) = &r.model {
+                *toks.entry(m).or_insert(0) += r.tot;
+                let e = lat.entry(m).or_insert((0, 0));
+                e.0 += r.lat;
+                e.1 += 1;
+            }
+        }
+        let total: u64 = toks.values().sum();
+        let mut sorted: Vec<(&String, u64)> = toks.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
         lines.push(Line::from(""));
-        let mut spans: Vec<Span> = vec![section_label("models ", style::VIOLET)];
-        for (idx, (m, c)) in sorted.iter().take(3).enumerate() {
+        let mut spans: Vec<Span> = vec![section_label("models ", style::SUBTLE)];
+        let solo = sorted.len() == 1;
+        for (idx, (m, t)) in sorted.iter().take(3).enumerate() {
             if idx > 0 {
                 spans.push(sep());
             }
             let pct = if total > 0 {
-                **c as f64 / total as f64 * 100.0
+                *t as f64 / total as f64 * 100.0
             } else {
                 0.0
             };
             spans.push(Span::styled(
-                short_model(m),
+                (*m).clone(),
                 Style::default().fg(style::VIOLET),
             ));
+            if !solo {
+                spans.push(connector(" ".to_string()));
+                spans.push(num(format!("{:.0}%", pct)));
+            }
+            let avg = lat.get(m).map(|(a, b)| *a as f64 / (*b).max(1) as f64).unwrap_or(0.0);
             spans.push(connector(" ".to_string()));
-            spans.push(num(format!("{:.0}%", pct)));
+            spans.push(Span::styled(
+                style::fmt_lat(avg.round() as u64),
+                Style::default().fg(style::heat_color(avg)),
+            ));
         }
         lines.push(Line::from(spans));
+    }
+    {
+        lines.push(Line::from(""));
+        let th: u64 = app.agg.records.iter().map(|r| r.th_ch).sum();
+        let tr: u64 = app.agg.records.iter().map(|r| r.tr_ch).sum();
+        let nvt = if app.agg.records.is_empty() {
+            0.0
+        } else {
+            app.agg.records.iter().map(|r| r.nvt).sum::<f64>() / app.agg.records.len() as f64 * 100.0
+        };
+        lines.push(Line::from(vec![
+            section_label("vol    ", style::SUBTLE),
+            connector("in ".to_string()),
+            num(compact(app.agg.r#in)),
+            sep(),
+            connector("out ".to_string()),
+            num(compact(app.agg.out)),
+            sep(),
+            connector("sess ".to_string()),
+            num(format!("{}", app.agg.sessions.len())),
+        ]));
+        lines.push(Line::from(vec![
+            section_label("tex    ", style::SUBTLE),
+            connector("think ".to_string()),
+            data(format!("{}", th)),
+            sep(),
+            connector("tool ".to_string()),
+            data(format!("{}", tr)),
+            sep(),
+            connector("novelty ".to_string()),
+            num(format!("{:.0}%", nvt)),
+        ]));
+        let cov = crate::ledger_read::compute_coverage(
+            &crate::ledger_read::load_state_events(),
+            app.range.since,
+            app.range.until,
+        );
+        let apct = if cov.total_s > 0.0 { cov.active_s / cov.total_s * 100.0 } else { 100.0 };
+        lines.push(Line::from(vec![
+            section_label("cov    ", style::SUBTLE),
+            connector("active ".to_string()),
+            num(format!("{:.0}%", apct)),
+            sep(),
+            connector("gaps ".to_string()),
+            num(format!("{}", cov.off_intervals.len())),
+        ]));
     }
 
     // Cluster into the upper-left of the panel. Text gets the full panel
@@ -351,6 +409,18 @@ fn compute_split(app: &App) -> Option<SplitSummary> {
         cache_reuse_n: bot_cr,
         cache_total: bot_in + bot_cr + bot_cc,
     })
+}
+
+fn compact(n: u64) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.1}B", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 fn fmt_dur(secs: f64) -> String {
