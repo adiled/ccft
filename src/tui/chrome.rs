@@ -76,10 +76,6 @@ pub fn keybar(f: &mut Frame, area: Rect, _app: &App) {
     push_vim(&mut left, ":s sessions", 1);
     left.push(Span::raw(" "));
     push_vim(&mut left, ":p perf", 1);
-    left.push(gap());
-    push_vim(&mut left, ":/ search", 1);
-    left.push(Span::raw(" "));
-    push_vim(&mut left, ":! filter", 1);
 
     // Right half: scroll/range hints (no pink — they're modal hints).
     let right: Vec<Span> = vec![
