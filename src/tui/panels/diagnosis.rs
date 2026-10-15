@@ -68,7 +68,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     // ── vibe ────────────────────────────────────────────────────────────
     lines.push(Line::from(vec![
-        section_label("vibe    ", style::PINK),
+        section_label("vibe    ", style::SUBTLE),
         Span::styled(
             format!("bot {}", vibe_label(bot)),
             Style::default()
@@ -88,7 +88,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     if let Some(d) = diagnosis(&bd) {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            section_label("note   ", style::GOLD),
+            section_label("note   ", style::SUBTLE),
             note(d.to_string()),
         ]));
     }
@@ -100,7 +100,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         // "split   23/77   5 drv  17 bot    ·  bot-heavy …"
         // Color the percentages by their owning side: driver=CYAN, bot=PINK.
         lines.push(Line::from(vec![
-            section_label("split  ", style::CYAN),
+            section_label("split  ", style::SUBTLE),
             Span::styled(
                 format!("{}", s.drv_pct as u64),
                 Style::default()
@@ -188,7 +188,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             .unwrap_or((0, 0.0));
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            section_label("peaks  ", style::LIME),
+            section_label("peaks  ", style::SUBTLE),
             connector("busy ".to_string()),
             num(format!("{:02}:00", peak.0)),
             connector(" (".to_string()),
@@ -220,7 +220,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         let mut sorted: Vec<(&String, u64)> = toks.into_iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
         lines.push(Line::from(""));
-        let mut spans: Vec<Span> = vec![section_label("models ", style::VIOLET)];
+        let mut spans: Vec<Span> = vec![section_label("models ", style::SUBTLE)];
         for (idx, (m, t)) in sorted.iter().take(3).enumerate() {
             if idx > 0 {
                 spans.push(sep());
