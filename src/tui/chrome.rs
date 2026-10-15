@@ -27,7 +27,7 @@ pub fn header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(" // ", style::dim()),
         Span::styled(env!("CARGO_PKG_VERSION"), style::label()),
         Span::raw("  "),
-        Span::styled("ONLINE", style::title()),
+        Span::styled(if pid > 0 { "ONLINE" } else { "OFFLINE" }, style::title()),
     ]);
 
     let right = Line::from(vec![
