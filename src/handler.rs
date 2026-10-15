@@ -154,7 +154,25 @@ fn extract_request_delta(
     let Ok(data): Result<Value, _> = serde_json::from_slice(body_bytes) else {
         return none();
     };
-    let Some(messages) = data.get("messages").and_then(|m| m.as_array()) else {
+    let mut owned: Vec<Value> = Vec::new();
+    if let Some(inp) = data.get("input") {
+        if let Some(st) = inp.as_str() {
+            owned.push(serde_json::json!({"role": "user", "content": st}));
+        } else if let Some(arr) = inp.as_array() {
+            for item in arr {
+                if item.is_string() {
+                    owned.push(serde_json::json!({"role": "user", "content": item}));
+                } else {
+                    owned.push(item.clone());
+                }
+            }
+        }
+    }
+    let messages: &[Value] = if let Some(m) = data.get("messages").and_then(|m| m.as_array()) {
+        m
+    } else if !owned.is_empty() {
+        &owned
+    } else {
         return none();
     };
 
@@ -238,6 +256,35 @@ fn extract_request_delta(
         }
 
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        let mtype = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        if mtype == "function_call_output" {
+            if let Some(o) = msg.get("output") {
+                if let Some(st) = o.as_str() {
+                    tool += st.chars().count() as u64;
+                } else if let Some(arr) = o.as_array() {
+                    for inner in arr {
+                        if let Some(t) = inner.get("text").and_then(|t| t.as_str()) {
+                            tool += t.chars().count() as u64;
+                        } else if let Some(st) = inner.as_str() {
+                            tool += st.chars().count() as u64;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        if mtype == "reasoning" {
+            if let Some(arr) = msg.get("summary").and_then(|v| v.as_array()) {
+                for inner in arr {
+                    if let Some(t) = inner.get("text").and_then(|t| t.as_str()) {
+                        thinking += t.chars().count() as u64;
+                    }
+                }
+            }
+            continue;
+        }
 
         if role == "tool" {
             if let Some(c) = msg.get("content").and_then(|c| c.as_str()) {
@@ -273,7 +320,7 @@ fn extract_request_delta(
             for b in blocks {
                 let kind = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 match kind {
-                    "text" => {
+                    "text" | "input_text" | "output_text" => {
                         if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
                             let clean = clean_user_text(t);
                             if !clean.is_empty() {

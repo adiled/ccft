@@ -51,9 +51,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let max_rows = inner.height as usize;
 
-    let lines: Vec<Line> = buckets
-        .into_iter()
-        .take(max_rows)
+    let count_w = count_w.max(3);
+    let header = Line::from(vec![
+        Span::styled(pad_left("", label_w), style::dim()),
+        Span::raw(" "),
+        Span::raw(" ".repeat(bar_w as usize)),
+        Span::raw(" "),
+        Span::styled(pad_left("req", count_w), style::dim()),
+    ]);
+
+    let mut lines: Vec<Line> = vec![header];
+    lines.extend(
+        buckets
+            .into_iter()
+            .take(max_rows.saturating_sub(1))
         .map(|b| {
             let label_padded = pad_left(&b.label, label_w);
             let fill_cells = ((b.count as f64 / max_n as f64) * bar_w as f64).round() as u16;
@@ -72,8 +83,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 Span::raw(" "),
                 Span::styled(count_str, style::label()),
             ])
-        })
-        .collect();
+        }),
+    );
 
     f.render_widget(Paragraph::new(lines), inner);
 }

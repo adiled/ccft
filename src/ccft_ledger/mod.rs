@@ -128,15 +128,19 @@ fn read_last_n_lines(path: &std::path::Path, n: usize) -> Vec<String> {
         if r.read_exact(&mut chunk).is_err() {
             break;
         }
-        buf.extend(chunk);
+        let mut nb = chunk;
+        nb.extend(buf);
+        buf = nb;
         let text = String::from_utf8_lossy(&buf);
-        let count = text.lines().filter(|l| !l.trim().is_empty()).count();
-        if count >= n {
-            let lines: Vec<String> = text
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(str::to_string)
-                .collect();
+        let mut lines: Vec<String> = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect();
+        if cursor > 0 && !lines.is_empty() {
+            lines.remove(0);
+        }
+        if lines.len() >= n {
             let start = lines.len().saturating_sub(n);
             let mut result: Vec<String> = lines[start..].to_vec();
             result.reverse();

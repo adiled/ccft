@@ -14,7 +14,7 @@ use ratatui::Frame;
 const LEDGER_TABLE_MAX_ROWS: usize = 320;
 
 pub fn render(f: &mut Frame, area: Rect, _app: &App) {
-    let inner = style::panel(f, area, "ledger");
+    let inner = style::panel_with(f, area, "ledger", 1);
     let local = crate::tui::style::local_offset();
 
     let header = Row::new(vec![
@@ -31,12 +31,31 @@ pub fn render(f: &mut Frame, area: Rect, _app: &App) {
     // Fetch directly from file — skips any app.agg.records and avoids
     // cloning the whole table.  load_top_records reads only the tail end
     // of each ledger file so even multi-million-line ledgers never block.
-    let recs = crate::ledger_read::load_top_records(max_rows.max(LEDGER_TABLE_MAX_ROWS));
+    let mut recs = crate::ledger_read::load_top_records(max_rows.max(LEDGER_TABLE_MAX_ROWS));
+    recs.sort_by(|a, b| b.ts.partial_cmp(&a.ts).unwrap_or(std::cmp::Ordering::Equal));
 
-    let rows: Vec<Row> = recs
-        .iter()
-        .take(max_rows)
-        .map(|r| {
+    let mut rows: Vec<Row> = Vec::new();
+    let mut prev_day: Option<(i32, u8, u8)> = None;
+    for r in recs.iter() {
+        if rows.len() >= max_rows {
+            break;
+        }
+        let dt0 = time::OffsetDateTime::from_unix_timestamp(r.ts as i64)
+            .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+            .to_offset(local);
+        let day = (dt0.year(), dt0.month() as u8, dt0.day());
+        if let Some(p) = prev_day {
+            if p != day && rows.len() + 1 < max_rows {
+                let sep = "─".repeat(8);
+                rows.push(Row::new(vec![
+                    Cell::from(Span::styled(sep, style::dim())),
+                    Cell::from(Span::styled("─".repeat(7), style::dim())),
+                    Cell::from(Span::styled("─".repeat(7), style::dim())),
+                    Cell::from(Span::styled("─".repeat(7), style::dim())),
+                ]));
+            }
+        }
+        prev_day = Some(day);
             let dt = time::OffsetDateTime::from_unix_timestamp(r.ts as i64)
                 .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
                 .to_offset(local);
@@ -60,14 +79,13 @@ pub fn render(f: &mut Frame, area: Rect, _app: &App) {
             } else {
                 style::dim()
             };
-            Row::new(vec![
+            rows.push(Row::new(vec![
                 Cell::from(Span::styled(when, style::label())),
                 Cell::from(Span::styled(short_n(r.u_ch), drv_style)),
                 Cell::from(Span::styled(short_n(r.out), bot_style)),
                 Cell::from(Span::styled(style::fmt_lat(r.lat), lat_style)),
-            ])
-        })
-        .collect();
+            ]));
+    }
 
     let table = Table::new(
         rows,

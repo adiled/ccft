@@ -2,7 +2,7 @@
 //! Driver/bot dynamics alongside vibe label and operational notes.
 
 use crate::brainrot::aggregate::{
-    classify_turns_prob, diagnosis, score_breakdown, short_model, split_summary, vibe_label,
+    classify_turns_prob, diagnosis, score_breakdown, split_summary, vibe_label,
     TurnKind,
 };
 use crate::tui::style;
@@ -209,23 +209,29 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // ── models ──────────────────────────────────────────────────────────
-    if !app.agg.models.is_empty() {
-        let total: u64 = app.agg.models.values().sum();
-        let mut sorted: Vec<(&String, &u64)> = app.agg.models.iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(a.1));
+    if !app.agg.records.is_empty() {
+        let mut toks: HashMap<&String, u64> = HashMap::new();
+        for r in &app.agg.records {
+            if let Some(m) = &r.model {
+                *toks.entry(m).or_insert(0) += r.tot;
+            }
+        }
+        let total: u64 = toks.values().sum();
+        let mut sorted: Vec<(&String, u64)> = toks.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
         lines.push(Line::from(""));
         let mut spans: Vec<Span> = vec![section_label("models ", style::VIOLET)];
-        for (idx, (m, c)) in sorted.iter().take(3).enumerate() {
+        for (idx, (m, t)) in sorted.iter().take(3).enumerate() {
             if idx > 0 {
                 spans.push(sep());
             }
             let pct = if total > 0 {
-                **c as f64 / total as f64 * 100.0
+                *t as f64 / total as f64 * 100.0
             } else {
                 0.0
             };
             spans.push(Span::styled(
-                short_model(m),
+                (*m).clone(),
                 Style::default().fg(style::VIOLET),
             ));
             spans.push(connector(" ".to_string()));
