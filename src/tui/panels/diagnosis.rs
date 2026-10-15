@@ -66,12 +66,38 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let drv = bd.d_shrunk as u32;
     let mut lines: Vec<Line> = Vec::new();
 
-    // ── split summary (driver vs bot turns) ─────────────────────────────
+    lines.push(Line::from(vec![
+        section_label("vibe    ", style::SUBTLE),
+        Span::styled(
+            format!("bot {}", vibe_label(bot)),
+            Style::default()
+                .fg(style::score_color(bot))
+                .add_modifier(Modifier::BOLD),
+        ),
+        sep(),
+        Span::styled(
+            format!("driver {}", vibe_label(drv)),
+            Style::default()
+                .fg(style::score_color(drv))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    if let Some(d) = diagnosis(&bd) {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            section_label("note   ", style::SUBTLE),
+            note(d.to_string()),
+        ]));
+    }
     if let Some(s) = compute_split(app) {
         lines.push(Line::from(""));
         let summary = split_summary(s.drv_pct, s.bot_pct, s.drv_n, s.bot_n);
         lines.push(Line::from(vec![
             section_label("split  ", style::SUBTLE),
+            note(summary.to_string()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("       ", style::dim()),
             connector("drv ".to_string()),
             Span::styled(
                 format!("{:.0}%", s.drv_pct),
@@ -89,12 +115,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
             connector(format!(" ({})", s.bot_n)),
-            sep(),
-            note(summary.to_string()),
         ]));
-
-        // Loop length + driver gap median + cache offload, on a sub-line
-        // when present.
         let mut sub_bits: Vec<Span> = Vec::new();
         if !s.loop_lens.is_empty() {
             let p50 = s.loop_lens[s.loop_lens.len() / 2];
@@ -138,35 +159,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(prefix));
         }
     }
-
-
-    // ── vibe ────────────────────────────────────────────────────────────
-    lines.push(Line::from(vec![
-        section_label("vibe    ", style::SUBTLE),
-        Span::styled(
-            format!("bot {}", vibe_label(bot)),
-            Style::default()
-                .fg(style::score_color(bot))
-                .add_modifier(Modifier::BOLD),
-        ),
-        sep(),
-        Span::styled(
-            format!("driver {}", vibe_label(drv)),
-            Style::default()
-                .fg(style::score_color(drv))
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
-
-    // ── note ────────────────────────────────────────────────────────────
-    if let Some(d) = diagnosis(&bd) {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            section_label("note   ", style::SUBTLE),
-            note(d.to_string()),
-        ]));
-    }
-
     // ── peaks ───────────────────────────────────────────────────────────
     if !app.agg.by_hour.is_empty() {
         let peak = app
