@@ -156,17 +156,14 @@ fn tile(
     }
     {
         let name = label.to_uppercase();
-        let w = name.chars().count() as u16;
-        if w < area.width {
-            let tx = area.x + (area.width - w) / 2;
-            f.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    name,
-                    Style::default().fg(hue).add_modifier(Modifier::BOLD),
-                ))),
-                Rect { x: tx, y: area.y, width: w, height: 1 },
-            );
-        }
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                name,
+                Style::default().fg(hue).add_modifier(Modifier::BOLD),
+            )))
+            .alignment(Alignment::Center),
+            Rect { x: inner.x, y: area.y, width: inner.width, height: 1 },
+        );
     }
 
     // Adaptive vertical layout. We always render the title; everything
