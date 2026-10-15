@@ -155,10 +155,7 @@ fn tile(
         return;
     }
     {
-        let mut name = label.to_uppercase();
-        if name.chars().count() % 2 == 1 {
-            name.push(' ');
-        }
+        let name = label.to_uppercase();
         let w = name.chars().count() as u16;
         if w < area.width {
             let tx = area.x + (area.width - w) / 2;
