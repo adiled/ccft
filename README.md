@@ -50,6 +50,26 @@ ccft was first built for hygiene of remote AI provider traffic, these features i
 
 **Config** knobs in `~/.config/ccft/ccft.json`: `system_override` (extra system prompt), `pain` (false trims Claude Code's bloat blocks), `ledger` (write JSONL), `hosts` (which `host[:port]` endpoints ccft flytraps; env vars like `OLLAMA_HOST` union in automatically). See [`docs/reference.md#config`](docs/reference.md#config).
 
+## Library
+
+`ccft` is also a reusable Rust library (`src/lib.rs` facade):
+
+```toml
+ccft = { version = "1.10", default-features = false, features = ["core"] }
+```
+
+| Feature | Modules | Needs |
+|---|---|---|
+| `core` | `ledger`, `lex`, `brainrot` — records, text stats, scoring | nothing networked |
+| `sse` | `sse`, `session` — hyper body tap, session-id extract | `hyper` |
+| `bin` | the proxy + TUI executable | full deps |
+
+```rust
+use ccft::ledger::Record;
+use ccft::brainrot::Aggregate;
+let agg = Aggregate::ingest(vec![Record::default()]);
+```
+
 ## Learn more
 
 - [Install / uninstall / lifecycle / dev mode](docs/install.md)
