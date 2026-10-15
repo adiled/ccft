@@ -9,7 +9,7 @@ What makes ccft truly a self-improvement tool? It weighs bots against drivers, w
 ## Install ccft
 
 From crates.io (`cargo install` builds from source, so there are no
-unsigned-binary / Gatekeeper issues — macOS and Linux get the same path):
+unsigned-binary / Gatekeeper issues - macOS and Linux get the same path):
 
 ```bash
 # requires rustup / cargo (brew install rust on macOS)
@@ -60,8 +60,8 @@ ccft = { version = "1.10", default-features = false, features = ["core"] }
 
 | Feature | Modules | Needs |
 |---|---|---|
-| `core` | `ledger`, `lex`, `brainrot` — records, text stats, scoring | nothing networked |
-| `sse` | `sse`, `session` — hyper body tap, session-id extract | `hyper` |
+| `core` | `ledger`, `lex`, `brainrot` - records, text stats, scoring | nothing networked |
+| `sse` | `sse`, `session` - hyper body tap, session-id extract | `hyper` |
 | `bin` | the proxy + TUI executable | full deps |
 
 ```rust
