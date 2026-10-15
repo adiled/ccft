@@ -59,7 +59,7 @@ pub fn keybar(f: &mut Frame, area: Rect, _app: &App) {
 
     // Left half: vim-style command list with leading-char in pink.
     let mut left: Vec<Span> = Vec::new();
-    push_vim(&mut left, ":help", 1);
+    push_vim(&mut left, "? help", 0);
     left.push(gap());
     push_vim(&mut left, ":q quit", 1);
     left.push(gap());

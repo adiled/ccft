@@ -326,8 +326,30 @@ fn help_lines() -> Vec<Line<'static>> {
             Span::styled("force refresh", style::label()),
         ]),
         Line::from(vec![
+            Span::styled("  ?  ", style::key_hint()),
+            Span::styled("this help", style::label()),
+        ]),
+        Line::from(vec![
             Span::styled("  Esc / q  ", style::key_hint()),
             Span::styled("close overlay / quit TUI", style::label()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Panels", style::title())),
+        Line::from(vec![
+            Span::styled("  heat req  ", style::key_hint()),
+            Span::styled("requests per time bucket", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  ledger  ", style::key_hint()),
+            Span::styled("drv-in = your typed chars, bot-out = reply tokens", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  models %  ", style::key_hint()),
+            Span::styled("token share in range", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  chart y  ", style::key_hint()),
+            Span::styled("vibe 0-100, 50 = your normal", style::label()),
         ]),
     ]
 }
