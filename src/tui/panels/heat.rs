@@ -20,7 +20,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
-    let inner = style::panel(f, area, "heat");
+    let inner = style::panel_with(f, area, "heat", 1);
     if inner.width < 6 || inner.height == 0 {
         return;
     }
