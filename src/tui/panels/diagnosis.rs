@@ -97,25 +97,25 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     if let Some(s) = compute_split(app) {
         lines.push(Line::from(""));
         let summary = split_summary(s.drv_pct, s.bot_pct, s.drv_n, s.bot_n);
-        // "split   23/77   5 drv  17 bot    ·  bot-heavy …"
-        // Color the percentages by their owning side: driver=CYAN, bot=PINK.
         lines.push(Line::from(vec![
             section_label("split  ", style::SUBTLE),
+            connector("drv ".to_string()),
             Span::styled(
-                format!("{}", s.drv_pct as u64),
+                format!("{:.0}%", s.drv_pct),
                 Style::default()
                     .fg(style::CYAN)
                     .add_modifier(Modifier::BOLD),
             ),
-            connector("/".to_string()),
+            connector(format!(" ({})", s.drv_n)),
+            sep(),
+            connector("bot ".to_string()),
             Span::styled(
-                format!("{}", s.bot_pct as u64),
+                format!("{:.0}%", s.bot_pct),
                 Style::default()
                     .fg(style::PINK)
                     .add_modifier(Modifier::BOLD),
             ),
-            connector(format!("   {} drv  ", s.drv_n)),
-            connector(format!("{} bot", s.bot_n)),
+            connector(format!(" ({})", s.bot_n)),
             sep(),
             note(summary.to_string()),
         ]));
