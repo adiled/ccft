@@ -351,6 +351,28 @@ fn help_lines() -> Vec<Line<'static>> {
             Span::styled("  chart y  ", style::key_hint()),
             Span::styled("vibe 0-100, 50 = your normal", style::label()),
         ]),
+        Line::from(""),
+        Line::from(Span::styled("Deep dive labels", style::title())),
+        Line::from(vec![
+            Span::styled("  vol  ", style::key_hint()),
+            Span::styled("in/out token totals, sess = sessions", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  tex  ", style::key_hint()),
+            Span::styled("think/reasoning chars, tool output chars, novelty", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  cov  ", style::key_hint()),
+            Span::styled("ledger active share, gaps = off windows", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  split  ", style::key_hint()),
+            Span::styled("drv/bot turn share and counts", style::label()),
+        ]),
+        Line::from(vec![
+            Span::styled("  loop/gap  ", style::key_hint()),
+            Span::styled("bot turns per loop p50/p90, median driver gap", style::label()),
+        ]),
     ]
 }
 
