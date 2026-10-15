@@ -67,8 +67,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ])
         .split(inner);
 
-    let chart_area = pad_horizontal(split[2], 3, 2);
-    let xlabels_area = pad_horizontal(split[3], 3, 2);
+    let chart_area = pad_horizontal(split[2], 1, 2);
+    let xlabels_area = pad_horizontal(split[3], 1, 2);
 
     range_chips(f, split[0], app);
     chart(f, chart_area, app);
